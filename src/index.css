@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: rgba(15, 23, 42, 0.95);
+  background-color: #f8fafc;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  
+}
+
+a {
+  font-weight: 500;
+  color: #2563eb;
+  text-decoration: inherit;
+}
+a:hover {
+  color: #1d4ed8;
+}
+
+body {
+  margin: 0;
+  display: block;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+}
+
+/* Reset native button look; we use Tailwind utility classes */
+button {
+  font-family: inherit;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #0f172a;
+    background-color: #f8fafc;
+  }
+  a:hover {
+    color: #1d4ed8;
+  }
+}
+
+/* Component primitives via @layer for consistent design system */
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700 focus-visible:ring-brand-300 ring-offset-white;
+  }
+  .btn-success {
+    @apply btn bg-green-600 text-white hover:bg-green-700 focus-visible:ring-green-300 ring-offset-white;
+  }
+  .btn-secondary {
+    @apply btn bg-white text-slate-900 border border-slate-200 hover:bg-slate-50 focus-visible:ring-slate-300 ring-offset-white;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-300 ring-offset-white;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center rounded-full p-1 text-white hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40;
+  }
+  .btn-sm { @apply px-3 py-1.5 text-sm rounded-lg; }
+  .btn-xs { @apply px-2 py-1 text-xs rounded-md; }
+  .input {
+    @apply w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400;
+  }
+  .select {
+    @apply w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400;
+  }
+  .card {
+    @apply bg-white rounded-2xl border border-slate-200 p-4 shadow-card;
+  }
+  .section-title {
+    @apply font-semibold mb-2 text-slate-800;
+  }
+  .badge {
+    @apply text-xs font-semibold px-2 py-0.5 rounded-full inline-block;
+  }
+  .badge-success { @apply bg-green-100 text-green-800; }
+  .badge-info { @apply bg-brand-100 text-brand-800; }
+  .badge-warn { @apply bg-yellow-100 text-yellow-800; }
+  .badge-urgent { @apply bg-red-50 text-red-600 border border-red-200; }
+}
