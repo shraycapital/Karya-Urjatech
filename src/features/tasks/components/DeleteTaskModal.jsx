@@ -115,3 +115,5 @@ const DeleteTaskModal = ({ isOpen, onClose, onConfirm, taskTitle, t }) => {
 
 export default DeleteTaskModal;
 
+
+

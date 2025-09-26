@@ -1,6 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { STATUSES, DIFFICULTY_CONFIG, ROLES } from '../../../shared/constants';
 import Section from '../../../shared/components/Section';
+import { getBonusClaimsInRange, getBonusPointsInRange, getPointsFromEntry, getTotalBonusPoints } from '../../../shared/utils/dailyBonus.js';
+
 
 function PointsTab({ currentUser, tasks, users, departments, t }) {
   const [leaderboardView, setLeaderboardView] = useState('topPerformers'); // Default to top performers view
@@ -104,9 +106,12 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
            task.status === STATUSES.COMPLETE;
   });
 
+  const currentUserBonusLedger = currentUser?.dailyBonusLedger || {};
+  const totalBonusPoints = getTotalBonusPoints(currentUserBonusLedger);
+
   const userTotalPoints = userCompletedTasks.reduce((total, task) => {
     return total + calculateTaskPoints(task);
-  }, 0);
+  }, 0) + totalBonusPoints;
 
   // Calculate today's points and tasks
   const todayStats = useMemo(() => {
@@ -120,11 +125,15 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       return completionDate && completionDate >= todayStart && completionDate <= todayEnd;
     });
 
+    const taskPoints = todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    const bonusPoints = getBonusPointsInRange(currentUserBonusLedger, todayStart, todayEnd);
+
     return {
-      points: todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0),
-      tasks: todayTasks.length
+      points: taskPoints + bonusPoints,
+      tasks: todayTasks.length,
+      bonusPoints,
     };
-  }, [userCompletedTasks]);
+  }, [userCompletedTasks, currentUserBonusLedger]);
 
   // Calculate this week's points (Monday to Sunday)
   const weeklyStats = useMemo(() => {
@@ -144,11 +153,15 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       return completionDate && completionDate >= startOfWeek && completionDate <= endOfWeek;
     });
 
+    const taskPoints = weeklyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    const bonusPoints = getBonusPointsInRange(currentUserBonusLedger, startOfWeek, endOfWeek);
+
     return {
-      points: weeklyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0),
-      tasks: weeklyTasks.length
+      points: taskPoints + bonusPoints,
+      tasks: weeklyTasks.length,
+      bonusPoints,
     };
-  }, [userCompletedTasks]);
+  }, [userCompletedTasks, currentUserBonusLedger]);
 
   // Calculate this month's points (1st to end of month)
   const monthlyStats = useMemo(() => {
@@ -164,11 +177,15 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       return completionDate && completionDate >= startOfMonth && completionDate <= endOfMonth;
     });
 
+    const taskPoints = monthlyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    const bonusPoints = getBonusPointsInRange(currentUserBonusLedger, startOfMonth, endOfMonth);
+
     return {
-      points: monthlyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0),
-      tasks: monthlyTasks.length
+      points: taskPoints + bonusPoints,
+      tasks: monthlyTasks.length,
+      bonusPoints,
     };
-  }, [userCompletedTasks]);
+  }, [userCompletedTasks, currentUserBonusLedger]);
 
   // Calculate weekly breakdown by difficulty
   const weeklyBreakdown = useMemo(() => {
@@ -195,78 +212,84 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
         breakdown[key] = {
           label: DIFFICULTY_CONFIG[key].label,
           count: tasksOfDifficulty.length,
-          points: tasksOfDifficulty.reduce((sum, task) => sum + calculateTaskPoints(task), 0)
+          points: tasksOfDifficulty.reduce((sum, task) => sum + calculateTaskPoints(task), 0),
         };
       }
     });
 
+    const bonusClaims = getBonusClaimsInRange(currentUserBonusLedger, startOfWeek, endOfWeek);
+    if (bonusClaims.length > 0) {
+      const bonusPoints = bonusClaims.reduce((sum, claim) => sum + getPointsFromEntry(claim.entry), 0);
+      breakdown.dailyBonus = {
+        label: 'Daily Bonus',
+        count: bonusClaims.length,
+        points: bonusPoints,
+        isBonus: true,
+      };
+    }
+
     return breakdown;
-  }, [userCompletedTasks]);
+  }, [userCompletedTasks, currentUserBonusLedger]);
 
   // Calculate all users' rankings with robust date handling
   const userRankings = useMemo(() => {
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    const day = startOfWeek.getDay();
+    const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);
+    startOfWeek.setDate(diff);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const endOfWeek = new Date(startOfWeek);
+    endOfWeek.setDate(startOfWeek.getDate() + 6);
+    endOfWeek.setHours(23, 59, 59, 999);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    endOfMonth.setHours(23, 59, 59, 999);
+
     return users.map(user => {
       const userTasks = tasks.filter(task => {
-        // Hide deleted tasks from regular users (only admins can see them)
         if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
           return false;
         }
-        
-        return task.assignedUserIds && 
-               Array.isArray(task.assignedUserIds) && 
-               task.assignedUserIds.includes(user.id) && 
+
+        return task.assignedUserIds &&
+               Array.isArray(task.assignedUserIds) &&
+               task.assignedUserIds.includes(user.id) &&
                task.status === STATUSES.COMPLETE;
       });
 
-      // Calculate total points
-      const totalPoints = userTasks.reduce((total, task) => {
-        return total + calculateTaskPoints(task);
-      }, 0);
+      const userBonusLedger = user?.dailyBonusLedger || {};
+      const totalTaskPoints = userTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+      const totalBonus = getTotalBonusPoints(userBonusLedger);
 
-      // Calculate weekly points using robust date handling
       const weeklyTasks = userTasks.filter(task => {
         const completionDate = getTaskCompletionDate(task);
-        if (!completionDate) {
-          return false;
-        }
-        
-        try {
-          const now = new Date();
-          
-          // Get the start of the week (Monday at 00:00)
-          const startOfWeek = new Date(now);
-          const day = startOfWeek.getDay();
-          const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);
-          startOfWeek.setDate(diff);
-          startOfWeek.setHours(0, 0, 0, 0);
-          
-          // Get the end of the week (Sunday at 23:59:59)
-          const endOfWeek = new Date(startOfWeek);
-          endOfWeek.setDate(startOfWeek.getDate() + 6);
-          endOfWeek.setHours(23, 59, 59, 999);
-          
-          const isInWeek = completionDate >= startOfWeek && completionDate <= endOfWeek;
-          
-          return isInWeek;
-        } catch (error) {
-          return false;
-        }
+        return completionDate && completionDate >= startOfWeek && completionDate <= endOfWeek;
       });
+      const weekTaskPoints = weeklyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+      const weekBonusPoints = getBonusPointsInRange(userBonusLedger, startOfWeek, endOfWeek);
 
-      const weekPoints = weeklyTasks.reduce((total, task) => {
-        return total + calculateTaskPoints(task);
-      }, 0);
+      const monthlyTasksUser = userTasks.filter(task => {
+        const completionDate = getTaskCompletionDate(task);
+        return completionDate && completionDate >= startOfMonth && completionDate <= endOfMonth;
+      });
+      const monthTaskPoints = monthlyTasksUser.reduce((total, task) => total + calculateTaskPoints(task), 0);
+      const monthBonusPoints = getBonusPointsInRange(userBonusLedger, startOfMonth, endOfMonth);
 
       return {
         id: user.id,
         name: user.name || 'Unknown',
-        totalPoints,
-        weekPoints,
+        totalPoints: totalTaskPoints + totalBonus,
+        weekPoints: weekTaskPoints + weekBonusPoints,
+        monthPoints: monthTaskPoints + monthBonusPoints,
         completedTasks: userTasks.length,
         weeklyTasks: weeklyTasks.length,
-        departmentId: user.departmentIds?.[0] || null
+        departmentId: user.departmentIds?.[0] || null,
       };
-    }).sort((a, b) => b.weekPoints - a.weekPoints); // Sort by weekly points
+    }).sort((a, b) => b.weekPoints - a.weekPoints);
   }, [users, tasks]);
 
   // Get top 10 performers, include those with 0 points
@@ -279,7 +302,6 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
   const departmentRankings = useMemo(() => {
     const deptStats = {};
 
-    // Helper to ensure a department entry exists
     const ensureDept = (deptId) => {
       const dept = departments?.find(d => d.id === deptId);
       if (!deptStats[deptId]) {
@@ -296,14 +318,13 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       return deptStats[deptId];
     };
 
-    // Consider ALL completed tasks (for total points) - excluding deleted tasks for non-admins
     const completedTasksAllTime = tasks.filter(t => {
-      // Hide deleted tasks from regular users (only admins can see them)
       if (t.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
         return false;
       }
       return t.status === STATUSES.COMPLETE;
     });
+
     completedTasksAllTime.forEach(task => {
       const dId = task.departmentId || 'unassigned';
       const dept = ensureDept(dId);
@@ -314,17 +335,16 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       }
     });
 
-    // Consider only current month for monthPoints using robust date handling
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    endOfMonth.setHours(23, 59, 59, 999);
+
     const completedThisMonth = completedTasksAllTime.filter(task => {
       const completionDate = getTaskCompletionDate(task);
       if (!completionDate) return false;
-      
-      try {
-        const now = new Date();
-        return completionDate.getMonth() === now.getMonth() && completionDate.getFullYear() === now.getFullYear();
-      } catch (error) {
-        return false;
-      }
+      return completionDate >= startOfMonth && completionDate <= endOfMonth;
     });
 
     completedThisMonth.forEach(task => {
@@ -333,7 +353,21 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       dept.monthPoints += calculateTaskPoints(task);
     });
 
-    // Finalize totals and sort by monthPoints (desc), fallback to totalPoints
+    users.forEach(user => {
+      const deptId = user?.departmentIds?.[0] || 'unassigned';
+      const dept = ensureDept(deptId);
+      const userBonusLedger = user?.dailyBonusLedger || {};
+      const totalBonus = getTotalBonusPoints(userBonusLedger);
+      if (totalBonus > 0) {
+        dept.totalPoints += totalBonus;
+        const monthlyBonus = getBonusPointsInRange(userBonusLedger, startOfMonth, endOfMonth);
+        dept.monthPoints += monthlyBonus;
+        if (user?.id) {
+          dept.userIds.add(user.id);
+        }
+      }
+    });
+
     const finalized = Object.values(deptStats).map(d => ({
       ...d,
       totalUsers: d.userIds.size,
@@ -343,7 +377,7 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
     });
 
     return finalized;
-  }, [departments, tasks]);
+  }, [departments, tasks, users]);
 
   return (
     <div className="space-y-4 pb-20">
@@ -367,6 +401,13 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
               <div className="text-xs text-slate-500">with task completions</div>
             </div>
           </div>
+          {todayStats.bonusPoints > 0 && (
+            <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-emerald-600">
+              <span>{t('dailyBonusApplied', 'Daily bonus applied!')}</span>
+              <span className="text-emerald-700">+{todayStats.bonusPoints}</span>
+            </div>
+          )}
+
           <div className="mt-3 text-sm text-slate-700">
             {todayStats.points >= (currentUser?.dailyPointsTarget || 350) && 'You have hit your daily target! Great job!'}
           </div>
@@ -401,12 +442,15 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
                 No tasks completed this week
               </div>
             ) : (
-              Object.entries(weeklyBreakdown).map(([key, data]) => (
-                <div key={key} className="flex justify-between">
-                  <span>{data.label} ({data.count})</span>
-                  <span className="font-medium">{data.points} pts</span>
-                </div>
-              ))
+              Object.entries(weeklyBreakdown).map(([key, data]) => {
+                const label = data.isBonus ? t('dailyBonus', 'Daily Bonus') : data.label;
+                return (
+                  <div key={key} className="flex justify-between">
+                    <span>{label} ({data.count})</span>
+                    <span className="font-medium">{data.points} pts</span>
+                  </div>
+                );
+              })
             )}
           </div>
         </div>

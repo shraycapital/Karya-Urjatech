@@ -19,8 +19,7 @@ const loadGoogleMaps = () => {
   const apiKey =
     runtimeKey ||
     (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GOOGLE_MAPS_API_KEY) ||
-    (typeof process !== 'undefined' && process.env.REACT_APP_GOOGLE_MAPS_API_KEY) ||
-    'AIzaSyD4oQIMQtYNKs3VebunniF_y1NLlO3L168';
+    (typeof process !== 'undefined' && process.env.REACT_APP_GOOGLE_MAPS_API_KEY);
 
   if (!apiKey) {
     console.warn('Google Maps API key not configured.');

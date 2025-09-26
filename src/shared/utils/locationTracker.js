@@ -551,4 +551,61 @@ export const debugLocationData = async (userId) => {
 };
 
 
+export const getUsersLocationStats = async (userIds, startDate, endDate) => {
+  if (!userIds || userIds.length === 0) {
+    return {};
+  }
+
+  try {
+    const s = startDate instanceof Date ? startDate : new Date(startDate);
+    const e = endDate instanceof Date ? endDate : new Date(endDate);
+    const startTimestamp = Timestamp.fromDate(s);
+    const endTimestamp = Timestamp.fromDate(e);
+
+    const q = query(
+      collection(db, 'locationLogs'),
+      where('userId', 'in', userIds),
+      where('createdAt', '>=', startTimestamp),
+      where('createdAt', '<=', endTimestamp)
+    );
+
+    const querySnapshot = await getDocs(q);
+    const records = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    const stats = userIds.reduce((acc, userId) => {
+      acc[userId] = { totalLocations: 0, activeDays: new Set(), lastLocation: null };
+      return acc;
+    }, {});
+
+    records.forEach(record => {
+      const normalized = normalizeLocationRecord(record);
+      if (normalized.occurredAtISO) {
+        const userId = record.userId;
+        if (stats[userId]) {
+          stats[userId].totalLocations++;
+          const day = normalized.occurredAtISO.split('T')[0];
+          stats[userId].activeDays.add(day);
+          if (!stats[userId].lastLocation || new Date(normalized.occurredAtISO) > new Date(stats[userId].lastLocation)) {
+            stats[userId].lastLocation = normalized.occurredAtISO;
+          }
+        }
+      }
+    });
+
+    // Convert Set to size
+    Object.keys(stats).forEach(userId => {
+      stats[userId].activeDays = stats[userId].activeDays.size;
+    });
+
+    return stats;
+  } catch (error) {
+    console.error('Error fetching users location stats:', error);
+    return userIds.reduce((acc, userId) => {
+      acc[userId] = { totalLocations: 0, activeDays: 0, lastLocation: null };
+      return acc;
+    }, {});
+  }
+};
+
+
 

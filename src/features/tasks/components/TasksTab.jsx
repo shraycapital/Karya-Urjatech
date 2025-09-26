@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ROLES, STATUSES, DIFFICULTY_CONFIG } from '../../../shared/constants';
 import TaskForm from './TaskForm';
 import TaskList from './TaskList';
 import RequestModal from './RequestModal';
 import ScheduledTasksList from './ScheduledTasksList';
-import { toISTISOString } from '../../../shared/utils/date';
 import Section from '../../../shared/components/Section.jsx';
 import { 
   createTask as addTask, 
@@ -15,6 +14,10 @@ import {
 } from '../api/taskApi.js';
 import { createMaterialRequest } from '../utils/materialRequest.js';
 import { updateUser } from '../../admin/api/adminApi.js';
+import { db } from '../../../firebase';
+import { doc, updateDoc } from 'firebase/firestore';
+import { DAILY_BONUS_POINTS, formatDateKey, getBonusPointsInRange, hasBonusBeenClaimed, mergeBonusClaim } from '../../../shared/utils/dailyBonus.js';
+
 
 // This icon is only used here for now. It could be moved to a shared Icon component file.
 const PlusIcon = ({ size = 16, className = '' }) => (
@@ -25,7 +28,7 @@ const PlusIcon = ({ size = 16, className = '' }) => (
 );
 
 // Filter button component (moved outside TasksTab to prevent re-creation on render)
-const FilterButton = ({ status, label, count, isActive, onClick }) => (
+const FilterButton = ({ label, count, isActive, onClick }) => (
   <button
     onClick={onClick}
     className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200 ${
@@ -51,7 +54,94 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState([STATUSES.PENDING, STATUSES.ONGOING]); // Array of selected statuses, default to pending and ongoing
   const [isSyncing, setIsSyncing] = useState(false);
+  const [bonusLedger, setBonusLedger] = useState(() => currentUser?.dailyBonusLedger || {});
+  const [isClaimingBonus, setIsClaimingBonus] = useState(false);
+  const [isCelebratingBonus, setIsCelebratingBonus] = useState(false);
+  const celebrationTimeoutRef = useRef(null);
   
+  // Allow user to edit daily target with a weekly lock (until next Monday)
+  const [isEditingTarget, setIsEditingTarget] = useState(false);
+  const [tempTarget, setTempTarget] = useState('');
+
+  
+  useEffect(() => {
+    setBonusLedger(currentUser?.dailyBonusLedger || {});
+  }, [currentUser?.dailyBonusLedger]);
+
+  useEffect(() => {
+    return () => {
+      if (celebrationTimeoutRef.current) {
+        clearTimeout(celebrationTimeoutRef.current);
+      }
+    };
+  }, []);
+
+
+  // Calculate user's completed tasks (excluding deleted tasks for non-admins)
+  const userCompletedTasks = tasks.filter(task => {
+    // Hide deleted tasks from regular users (only admins can see them)
+    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+      return false;
+    }
+    
+    return task.assignedUserIds && 
+           Array.isArray(task.assignedUserIds) && 
+           task.assignedUserIds.includes(currentUser.id) && 
+           task.status === STATUSES.COMPLETE;
+  });
+
+  const todayStats = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    // Get the completion date for a task (inline function)
+    const getTaskCompletionDate = (task) => {
+      if (task.completedAt) {
+        return parseDate(task.completedAt);
+      }
+      
+      // Fallback to updatedAt if completedAt is missing
+      if (task.updatedAt) {
+        return parseDate(task.updatedAt);
+      }
+      
+      // Last resort: createdAt
+      if (task.createdAt) {
+        return parseDate(task.createdAt);
+      }
+      
+      return null;
+    };
+
+    const todayTasks = userCompletedTasks.filter(task => {
+      const completionDate = getTaskCompletionDate(task);
+      return completionDate && completionDate >= todayStart && completionDate <= todayEnd;
+    });
+
+    const taskPoints = todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    const bonusPoints = getBonusPointsInRange(bonusLedger, todayStart, todayEnd);
+
+    return {
+      points: taskPoints + bonusPoints,
+      tasks: todayTasks.length,
+      bonusPoints,
+    };
+  }, [userCompletedTasks, bonusLedger]);
+
+
+  // Compute effective daily target with lock (default 250)
+  const effectiveDailyTarget = useMemo(() => {
+    const defaultTarget = 250;
+    const lockedUntil = parseDate(currentUser?.dailyTargetLockedUntil);
+    const now = new Date();
+    if (lockedUntil && now < lockedUntil) {
+      return currentUser?.dailyPointsTarget || defaultTarget;
+    }
+    return defaultTarget;
+  }, [currentUser]);
+
   // Safety checks to prevent initialization errors
   if (!currentUser || !users || !departments || !tasks) {
     return (
@@ -64,7 +154,17 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
       </div>
     );
   }
+
+  const todayKey = formatDateKey(new Date());
+  const hasClaimedDailyBonus = hasBonusBeenClaimed(bonusLedger, todayKey);
   
+  console.log('Daily Bonus Check:', {
+    hasClaimed: hasClaimedDailyBonus,
+    todayKey: todayKey,
+    bonusLedger: bonusLedger,
+    currentUserExists: !!currentUser
+  });
+
   // --- Daily points (today) for progress slider ---
   // Robust date parsing for Firestore Timestamps (from Points tab)
   const parseDate = (dateValue) => {
@@ -96,25 +196,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     }
   };
 
-  // Get the completion date for a task (from Points tab)
-  const getTaskCompletionDate = (task) => {
-    if (task.completedAt) {
-      return parseDate(task.completedAt);
-    }
-    
-    // Fallback to updatedAt if completedAt is missing
-    if (task.updatedAt) {
-      return parseDate(task.updatedAt);
-    }
-    
-    // Last resort: createdAt
-    if (task.createdAt) {
-      return parseDate(task.createdAt);
-    }
-    
-    return null;
-  };
-
   // Calculate points for a task (from Points tab)
   const calculateTaskPoints = (task) => {
     if (!task.assignedUserIds || !Array.isArray(task.assignedUserIds)) return 0;
@@ -139,67 +220,56 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     return basePointsPerUser + collaborationBonus + urgentBonus;
   };
 
-  // Calculate user's completed tasks (excluding deleted tasks for non-admins)
-  const userCompletedTasks = tasks.filter(task => {
-    // Hide deleted tasks from regular users (only admins can see them)
-    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
-      return false;
-    }
-    
-    return task.assignedUserIds && 
-           Array.isArray(task.assignedUserIds) && 
-           task.assignedUserIds.includes(currentUser.id) && 
-           task.status === STATUSES.COMPLETE;
-  });
-
-  const todayStats = useMemo(() => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    const todayTasks = userCompletedTasks.filter(task => {
-      const completionDate = getTaskCompletionDate(task);
-      return completionDate && completionDate >= todayStart && completionDate <= todayEnd;
-    });
-
-    return {
-      points: todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0),
-      tasks: todayTasks.length
-    };
-  }, [userCompletedTasks]);
-
-  const dailyTarget = currentUser?.dailyPointsTarget || 250;
-  const progressPct = Math.max(0, Math.min(100, Math.round((todayStats.points / dailyTarget) * 100)));
-
-  // Allow user to edit daily target with a weekly lock (until next Monday)
-  const [isEditingTarget, setIsEditingTarget] = useState(false);
-  const [tempTarget, setTempTarget] = useState('');
-
-
-  const getNextMondayStart = () => {
-    const now = new Date();
-    const day = now.getDay(); // 0 Sun ... 6 Sat
-    const daysUntilMonday = ((8 - day) % 7) || 7; // next Monday
-    const next = new Date(now);
-    next.setDate(now.getDate() + daysUntilMonday);
-    next.setHours(0, 0, 0, 0);
-    return next.toISOString();
-  };
-
-  // Compute effective daily target with lock (default 250)
-  const effectiveDailyTarget = useMemo(() => {
-    const defaultTarget = 250;
-    const lockedUntil = parseDate(currentUser?.dailyTargetLockedUntil);
-    const now = new Date();
-    if (lockedUntil && now < lockedUntil) {
-      return currentUser?.dailyPointsTarget || defaultTarget;
-    }
-    return defaultTarget;
-  }, [currentUser]);
-
   const sliderTarget = effectiveDailyTarget;
   const sliderPct = Math.max(0, Math.min(100, Math.round((todayStats.points / sliderTarget) * 100)));
+
+  const handleClaimDailyBonus = async () => {
+    if (isClaimingBonus || hasClaimedDailyBonus || !currentUser?.id) {
+      return;
+    }
+
+    setIsClaimingBonus(true);
+    const isoNow = new Date().toISOString();
+    const previousLedger = bonusLedger;
+    const updatedLedger = mergeBonusClaim(previousLedger, todayKey, DAILY_BONUS_POINTS, isoNow);
+    setBonusLedger(updatedLedger);
+
+    try {
+      await updateDoc(doc(db, 'users', currentUser.id), {
+        dailyBonusLedger: updatedLedger,
+        dailyBonusLastClaimedAt: isoNow,
+      });
+
+      try {
+        await updateDoc(doc(db, 'Users', currentUser.id), {
+          dailyBonusLedger: updatedLedger,
+          dailyBonusLastClaimedAt: isoNow,
+        });
+      } catch {
+        // Ignore missing alternate collection
+      }
+
+      if (typeof onTaskFeedback === 'function') {
+        onTaskFeedback(t('dailyBonusSuccess', 'Daily bonus claimed! +25 points'), 'success');
+      }
+
+      setIsCelebratingBonus(true);
+      if (celebrationTimeoutRef.current) {
+        clearTimeout(celebrationTimeoutRef.current);
+      }
+      celebrationTimeoutRef.current = setTimeout(() => {
+        setIsCelebratingBonus(false);
+      }, 1200);
+    } catch (error) {
+      console.error('Error claiming daily bonus:', error);
+      setBonusLedger(previousLedger);
+      if (typeof onTaskFeedback === 'function') {
+        onTaskFeedback(t('dailyBonusError', 'Failed to claim bonus. Please try again.'), 'error');
+      }
+    } finally {
+      setIsClaimingBonus(false);
+    }
+  };
 
   const handleAddTask = async (newTask) => {
     try {
@@ -261,7 +331,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
           newValues: patch
         });
       }
-    } catch (error) {
+    } catch {
       if (onTaskFeedback) {
         onTaskFeedback('Failed to update task. Please try again.', 'error');
       }
@@ -286,7 +356,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
           }
         });
       }
-    } catch (error) {
+    } catch {
       if (onTaskFeedback) {
         onTaskFeedback('Failed to delete task. Please try again.', 'error');
       }
@@ -403,21 +473,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     return false;
   });
   
-  // Sorting helpers
-  const getRelevantDate = (t) => {
-    // Use robust parser that supports Firestore Timestamp and strings
-    return (
-      parseDate(t?.completedAt) ||
-      parseDate(t?.updatedAt) ||
-      parseDate(t?.createdAt) ||
-      parseDate(t?.timestamp) ||
-      null
-    );
-  };
-  const getTaskPoints = (t) => {
-    if (typeof t?.points === 'number') return t.points;
-    return DIFFICULTY_CONFIG[t?.difficulty]?.points || 0;
-  };
   
 
   // Calculate task statistics
@@ -485,6 +540,43 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
                 <span className="text-green-700 font-medium">Target achieved 🎉</span>
               )}
             </div>
+          </div>
+
+          <div className="relative mt-4">
+            {isCelebratingBonus && (
+              <>
+                <span className="pointer-events-none absolute -top-2 left-6 h-3 w-3 rounded-full bg-pink-400/80 animate-ping"></span>
+                <span className="pointer-events-none absolute -bottom-3 right-8 h-3 w-3 rounded-full bg-amber-300/80 animate-ping delay-150"></span>
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <span className="rounded-full bg-gradient-to-r from-amber-400 to-pink-500 px-3 py-1 text-sm font-semibold text-white shadow-lg animate-bounce">
+                    +{DAILY_BONUS_POINTS}!
+                  </span>
+                </div>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={handleClaimDailyBonus}
+              disabled={isClaimingBonus || hasClaimedDailyBonus}
+              className={`w-full transform rounded-lg px-4 py-2 text-base font-semibold text-white transition-all duration-200 flex items-center justify-center gap-2 ${
+                hasClaimedDailyBonus
+                  ? 'bg-slate-400 cursor-not-allowed'
+                  : 'bg-brand-600 hover:bg-brand-700'
+              } ${isClaimingBonus ? 'opacity-80 cursor-wait' : ''} ${isCelebratingBonus ? 'scale-105 shadow-lg' : 'shadow-md'}`}
+            >
+              <span>{hasClaimedDailyBonus ? t('dailyBonusClaimed', 'Bonus claimed!') : t('claimDailyBonus', 'Claim Daily Bonus')}</span>
+              {!hasClaimedDailyBonus && (
+                <span className="text-sm font-bold">+{DAILY_BONUS_POINTS}</span>
+              )}
+              {isClaimingBonus && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent"></span>
+              )}
+            </button>
+            <p className="mt-2 text-center text-xs text-slate-600">
+              {hasClaimedDailyBonus
+                ? t('dailyBonusComeBack', 'Come back tomorrow for another boost!')
+                : t('dailyBonusHint', 'Tap once a day to grab an extra 25 points.')}
+            </p>
           </div>
 
           {/* Filter Buttons */}
@@ -569,7 +661,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
                   }
 
                   onTaskFeedback(feedbackMessage, 'success');
-                } catch (error) {
+                } catch {
                   onTaskFeedback('Failed to sync scheduled tasks.', 'error');
                 } finally {
                   setIsSyncing(false);

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Section from '../../../shared/components/Section.jsx';
 import LocationHistoryView from './LocationHistoryView.jsx';
-import { getUserLocationData, getUsersWithLocationData } from '../../../shared/utils/locationTracker.js';
+import { getUserLocationData, getUsersWithLocationData, getUsersLocationStats } from '../../../shared/utils/locationTracker.js';
 
 const getDateRange = (days) => {
   const endDate = new Date();
@@ -78,20 +78,10 @@ const LocationsTab = ({ currentUser, users, departments, t }) => {
           };
         });
 
-        const stats = {};
-        for (const user of enhancedUsers) {
-          try {
-            const { startDate, endDate } = getDateRange('30');
-            const userData = await getUserLocationData(user.id, startDate, endDate);
-            stats[user.id] = {
-              totalLocations: userData.length,
-              lastLocation: userData.length > 0 ? userData[0].occurredAtISO.split('T')[0] : null,
-              activeDays: new Set(userData.map(d => d.occurredAtISO?.split('T')[0])).size
-            };
-          } catch (error) {
-            stats[user.id] = { totalLocations: 0, lastLocation: null, activeDays: 0 };
-          }
-        }
+        const userIds = enhancedUsers.map(u => u.id);
+        const { startDate, endDate } = getDateRange('30');
+        const stats = await getUsersLocationStats(userIds, startDate, endDate);
+        
         console.log('LocationsTab: User stats calculated:', stats);
 
         setAvailableUsers(enhancedUsers);
