@@ -4,6 +4,7 @@ import TaskForm from './TaskForm';
 import TaskList from './TaskList';
 import RequestModal from './RequestModal';
 import ScheduledTasksList from './ScheduledTasksList';
+import { toISTISOString } from '../../../shared/utils/date';
 import Section from '../../../shared/components/Section.jsx';
 import { 
   createTask as addTask, 
@@ -28,7 +29,7 @@ const PlusIcon = ({ size = 16, className = '' }) => (
 );
 
 // Filter button component (moved outside TasksTab to prevent re-creation on render)
-const FilterButton = ({ label, count, isActive, onClick }) => (
+const FilterButton = ({ status, label, count, isActive, onClick }) => (
   <button
     onClick={onClick}
     className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200 ${
@@ -58,10 +59,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
   const [isClaimingBonus, setIsClaimingBonus] = useState(false);
   const [isCelebratingBonus, setIsCelebratingBonus] = useState(false);
   const celebrationTimeoutRef = useRef(null);
-  
-  // Allow user to edit daily target with a weekly lock (until next Monday)
-  const [isEditingTarget, setIsEditingTarget] = useState(false);
-  const [tempTarget, setTempTarget] = useState('');
 
   
   useEffect(() => {
@@ -76,7 +73,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     };
   }, []);
 
-
   // Safety checks to prevent initialization errors
   if (!currentUser || !users || !departments || !tasks) {
     return (
@@ -89,70 +85,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
       </div>
     );
   }
-
-  // Calculate user's completed tasks (excluding deleted tasks for non-admins)
-  const userCompletedTasks = tasks.filter(task => {
-    // Hide deleted tasks from regular users (only admins can see them)
-    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
-      return false;
-    }
-    
-    return task.assignedUserIds && 
-           Array.isArray(task.assignedUserIds) && 
-           task.assignedUserIds.includes(currentUser.id) && 
-           task.status === STATUSES.COMPLETE;
-  });
-
-  const todayStats = useMemo(() => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    // Get the completion date for a task (inline function)
-    const getTaskCompletionDate = (task) => {
-      if (task.completedAt) {
-        return parseDate(task.completedAt);
-      }
-      
-      // Fallback to updatedAt if completedAt is missing
-      if (task.updatedAt) {
-        return parseDate(task.updatedAt);
-      }
-      
-      // Last resort: createdAt
-      if (task.createdAt) {
-        return parseDate(task.createdAt);
-      }
-      
-      return null;
-    };
-
-    const todayTasks = userCompletedTasks.filter(task => {
-      const completionDate = getTaskCompletionDate(task);
-      return completionDate && completionDate >= todayStart && completionDate <= todayEnd;
-    });
-
-    const taskPoints = todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
-    const bonusPoints = getBonusPointsInRange(bonusLedger, todayStart, todayEnd);
-
-    return {
-      points: taskPoints + bonusPoints,
-      tasks: todayTasks.length,
-      bonusPoints,
-    };
-  }, [userCompletedTasks, bonusLedger]);
-
-  // Compute effective daily target with lock (default 250)
-  const effectiveDailyTarget = useMemo(() => {
-    const defaultTarget = 250;
-    const lockedUntil = parseDate(currentUser?.dailyTargetLockedUntil);
-    const now = new Date();
-    if (lockedUntil && now < lockedUntil) {
-      return currentUser?.dailyPointsTarget || defaultTarget;
-    }
-    return defaultTarget;
-  }, [currentUser]);
 
   const todayKey = formatDateKey(new Date());
   const hasClaimedDailyBonus = hasBonusBeenClaimed(bonusLedger, todayKey);
@@ -195,6 +127,25 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     }
   };
 
+  // Get the completion date for a task (from Points tab)
+  const getTaskCompletionDate = (task) => {
+    if (task.completedAt) {
+      return parseDate(task.completedAt);
+    }
+    
+    // Fallback to updatedAt if completedAt is missing
+    if (task.updatedAt) {
+      return parseDate(task.updatedAt);
+    }
+    
+    // Last resort: createdAt
+    if (task.createdAt) {
+      return parseDate(task.createdAt);
+    }
+    
+    return null;
+  };
+
   // Calculate points for a task (from Points tab)
   const calculateTaskPoints = (task) => {
     if (!task.assignedUserIds || !Array.isArray(task.assignedUserIds)) return 0;
@@ -218,6 +169,69 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     
     return basePointsPerUser + collaborationBonus + urgentBonus;
   };
+
+  // Calculate user's completed tasks (excluding deleted tasks for non-admins)
+  const userCompletedTasks = tasks.filter(task => {
+    // Hide deleted tasks from regular users (only admins can see them)
+    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+      return false;
+    }
+    
+    return task.assignedUserIds && 
+           Array.isArray(task.assignedUserIds) && 
+           task.assignedUserIds.includes(currentUser.id) && 
+           task.status === STATUSES.COMPLETE;
+  });
+
+  const todayStats = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    const todayTasks = userCompletedTasks.filter(task => {
+      const completionDate = getTaskCompletionDate(task);
+      return completionDate && completionDate >= todayStart && completionDate <= todayEnd;
+    });
+
+    const taskPoints = todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    const bonusPoints = getBonusPointsInRange(bonusLedger, todayStart, todayEnd);
+
+    return {
+      points: taskPoints + bonusPoints,
+      tasks: todayTasks.length,
+      bonusPoints,
+    };
+  }, [userCompletedTasks, bonusLedger]);
+
+  const dailyTarget = currentUser?.dailyPointsTarget || 250;
+  const progressPct = Math.max(0, Math.min(100, Math.round((todayStats.points / dailyTarget) * 100)));
+
+  // Allow user to edit daily target with a weekly lock (until next Monday)
+  const [isEditingTarget, setIsEditingTarget] = useState(false);
+  const [tempTarget, setTempTarget] = useState('');
+
+
+  const getNextMondayStart = () => {
+    const now = new Date();
+    const day = now.getDay(); // 0 Sun ... 6 Sat
+    const daysUntilMonday = ((8 - day) % 7) || 7; // next Monday
+    const next = new Date(now);
+    next.setDate(now.getDate() + daysUntilMonday);
+    next.setHours(0, 0, 0, 0);
+    return next.toISOString();
+  };
+
+  // Compute effective daily target with lock (default 250)
+  const effectiveDailyTarget = useMemo(() => {
+    const defaultTarget = 250;
+    const lockedUntil = parseDate(currentUser?.dailyTargetLockedUntil);
+    const now = new Date();
+    if (lockedUntil && now < lockedUntil) {
+      return currentUser?.dailyPointsTarget || defaultTarget;
+    }
+    return defaultTarget;
+  }, [currentUser]);
 
   const sliderTarget = effectiveDailyTarget;
   const sliderPct = Math.max(0, Math.min(100, Math.round((todayStats.points / sliderTarget) * 100)));
@@ -244,7 +258,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
           dailyBonusLedger: updatedLedger,
           dailyBonusLastClaimedAt: isoNow,
         });
-      } catch {
+      } catch (_upperCollectionError) {
         // Ignore missing alternate collection
       }
 
@@ -330,7 +344,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
           newValues: patch
         });
       }
-    } catch {
+    } catch (error) {
       if (onTaskFeedback) {
         onTaskFeedback('Failed to update task. Please try again.', 'error');
       }
@@ -355,7 +369,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
           }
         });
       }
-    } catch {
+    } catch (error) {
       if (onTaskFeedback) {
         onTaskFeedback('Failed to delete task. Please try again.', 'error');
       }
@@ -472,6 +486,21 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     return false;
   });
   
+  // Sorting helpers
+  const getRelevantDate = (t) => {
+    // Use robust parser that supports Firestore Timestamp and strings
+    return (
+      parseDate(t?.completedAt) ||
+      parseDate(t?.updatedAt) ||
+      parseDate(t?.createdAt) ||
+      parseDate(t?.timestamp) ||
+      null
+    );
+  };
+  const getTaskPoints = (t) => {
+    if (typeof t?.points === 'number') return t.points;
+    return DIFFICULTY_CONFIG[t?.difficulty]?.points || 0;
+  };
   
 
   // Calculate task statistics
@@ -660,7 +689,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
                   }
 
                   onTaskFeedback(feedbackMessage, 'success');
-                } catch {
+                } catch (error) {
                   onTaskFeedback('Failed to sync scheduled tasks.', 'error');
                 } finally {
                   setIsSyncing(false);
