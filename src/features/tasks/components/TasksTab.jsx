@@ -77,6 +77,19 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
   }, []);
 
 
+  // Safety checks to prevent initialization errors
+  if (!currentUser || !users || !departments || !tasks) {
+    return (
+      <div className="space-y-4 pb-20">
+        <Section title={t('myTasks')}>
+          <div className="text-center text-slate-500 py-8">
+            {t('loading') || 'Loading...'}
+          </div>
+        </Section>
+      </div>
+    );
+  }
+
   // Calculate user's completed tasks (excluding deleted tasks for non-admins)
   const userCompletedTasks = tasks.filter(task => {
     // Hide deleted tasks from regular users (only admins can see them)
@@ -130,7 +143,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     };
   }, [userCompletedTasks, bonusLedger]);
 
-
   // Compute effective daily target with lock (default 250)
   const effectiveDailyTarget = useMemo(() => {
     const defaultTarget = 250;
@@ -141,19 +153,6 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, onTas
     }
     return defaultTarget;
   }, [currentUser]);
-
-  // Safety checks to prevent initialization errors
-  if (!currentUser || !users || !departments || !tasks) {
-    return (
-      <div className="space-y-4 pb-20">
-        <Section title={t('myTasks')}>
-          <div className="text-center text-slate-500 py-8">
-            {t('loading') || 'Loading...'}
-          </div>
-        </Section>
-      </div>
-    );
-  }
 
   const todayKey = formatDateKey(new Date());
   const hasClaimedDailyBonus = hasBonusBeenClaimed(bonusLedger, todayKey);
