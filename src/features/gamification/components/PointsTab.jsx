@@ -1,10 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { STATUSES, DIFFICULTY_CONFIG, ROLES } from '../../../shared/constants';
 import Section from '../../../shared/components/Section';
 import { getBonusClaimsInRange, getBonusPointsInRange, getPointsFromEntry, getTotalBonusPoints } from '../../../shared/utils/dailyBonus.js';
 
 
-function PointsTab({ currentUser, tasks, users, departments, t }) {
+function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   const [leaderboardView, setLeaderboardView] = useState('topPerformers'); // Default to top performers view
 
   // Safety checks
@@ -113,6 +113,8 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
     return total + calculateTaskPoints(task);
   }, 0) + totalBonusPoints;
 
+  const dailyPointsTarget = currentUser?.dailyPointsTarget || 350;
+
   // Calculate today's points and tasks
   const todayStats = useMemo(() => {
     const todayStart = new Date();
@@ -134,6 +136,89 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
       bonusPoints,
     };
   }, [userCompletedTasks, currentUserBonusLedger]);
+
+  const pointsRemaining = Math.max(0, dailyPointsTarget - todayStats.points);
+
+  const easyPendingCount = useMemo(() => {
+    if (!Array.isArray(tasks) || !currentUser?.id) {
+      return 0;
+    }
+
+    const easyKey = 'easy';
+    const easyPoints = DIFFICULTY_CONFIG[easyKey]?.points || 0;
+
+    return tasks.filter(task => {
+      if (!task || !Array.isArray(task.assignedUserIds)) return false;
+      if (!task.assignedUserIds.includes(currentUser.id)) return false;
+      if (task.status === STATUSES.COMPLETE || task.status === STATUSES.DELETED) return false;
+
+      const difficultyKey = typeof task.difficulty === 'string' ? task.difficulty.toLowerCase() : '';
+      if (difficultyKey && DIFFICULTY_CONFIG[difficultyKey]) {
+        return difficultyKey === easyKey;
+      }
+
+      if (typeof task.points === 'number' && easyPoints > 0) {
+        return task.points <= easyPoints;
+      }
+
+      return false;
+    }).length;
+  }, [tasks, currentUser?.id]);
+
+  const calloutStorageKey = useMemo(() => {
+    if (!currentUser?.id) return null;
+    return `pointsTab.calloutDismissed.${currentUser.id}`;
+  }, [currentUser?.id]);
+
+  const [calloutDismissedToday, setCalloutDismissedToday] = useState(false);
+
+  useEffect(() => {
+    if (!calloutStorageKey || typeof window === 'undefined') {
+      setCalloutDismissedToday(false);
+      return;
+    }
+
+    const stored = window.localStorage.getItem(calloutStorageKey);
+    if (!stored) {
+      setCalloutDismissedToday(false);
+      return;
+    }
+
+    let storedDate = null;
+    try {
+      const parsed = JSON.parse(stored);
+      storedDate = typeof parsed === 'object' ? parsed?.date : parsed;
+    } catch (error) {
+      storedDate = stored;
+    }
+
+    const todayKey = new Date().toISOString().slice(0, 10);
+    setCalloutDismissedToday(storedDate === todayKey);
+  }, [calloutStorageKey]);
+
+  const persistCalloutDismissal = () => {
+    if (!calloutStorageKey || typeof window === 'undefined') return;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    window.localStorage.setItem(calloutStorageKey, JSON.stringify({ date: todayKey, timestamp: Date.now() }));
+  };
+
+  const handleDismissCallout = () => {
+    setCalloutDismissedToday(true);
+    persistCalloutDismissal();
+  };
+
+  const handleGoToTasksClick = () => {
+    persistCalloutDismissal();
+    setCalloutDismissedToday(true);
+    if (typeof onGoToTasks === 'function') {
+      onGoToTasks();
+    }
+  };
+
+  const isBehindTarget = todayStats.points < dailyPointsTarget;
+  const showMomentumCallout = !calloutDismissedToday && dailyPointsTarget > 0 && (todayStats.tasks === 0 || isBehindTarget);
+
+  const streakDays = currentUser?.streak || 0;
 
   // Calculate this week's points (Monday to Sunday)
   const weeklyStats = useMemo(() => {
@@ -382,6 +467,44 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
   return (
     <div className="space-y-4 pb-20">
       <Section title={t('myPoints')}>
+        {showMomentumCallout && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 text-amber-500">⚡</div>
+              <div className="flex-1">
+                <h4 className="text-sm font-semibold text-amber-900">Protect your streak</h4>
+                <p className="mt-1 text-sm text-amber-900">
+                  {streakDays > 0 ? `Your ${streakDays}-day streak is at risk—` : 'Lock in your streak—'}
+                  {todayStats.tasks === 0
+                    ? 'you have not completed a task yet today.'
+                    : `you still need ${pointsRemaining} point${pointsRemaining === 1 ? '' : 's'} to hit today\'s target.`}
+                  {' '}
+                  {easyPendingCount > 0
+                    ? `Try one of the ${easyPendingCount} easy task${easyPendingCount === 1 ? '' : 's'} waiting for a quick win.`
+                    : 'Complete any task to stay on track.'}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {typeof onGoToTasks === 'function' && (
+                    <button
+                      type="button"
+                      onClick={handleGoToTasksClick}
+                      className="inline-flex items-center rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1"
+                    >
+                      Review tasks
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleDismissCallout}
+                    className="inline-flex items-center rounded-md border border-amber-200 px-3 py-1.5 text-sm font-medium text-amber-900 transition hover:border-amber-300 hover:text-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1"
+                  >
+                    Not now
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Today progress toward daily target */}
         <div className="bg-white rounded-lg border p-4 mb-4">
           <div className="flex items-start justify-between gap-4">
@@ -389,10 +512,10 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
               <div className="text-sm font-medium text-slate-600 mb-1">Today's progress</div>
               <div className="flex items-baseline gap-2 mb-2">
                 <div className="text-3xl font-bold text-brand-600">{todayStats.points}</div>
-                <div className="text-slate-500">/ {currentUser?.dailyPointsTarget || 350} points</div>
+                <div className="text-slate-500">/ {dailyPointsTarget} points</div>
               </div>
               <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
-                <div className="h-full bg-brand-600" style={{ width: `${Math.min(100, (todayStats.points / (currentUser?.dailyPointsTarget || 350)) * 100)}%` }}></div>
+                <div className="h-full bg-brand-600" style={{ width: `${Math.min(100, dailyPointsTarget > 0 ? (todayStats.points / dailyPointsTarget) * 100 : 0)}%` }}></div>
               </div>
             </div>
             <div className="text-right">
@@ -409,7 +532,7 @@ function PointsTab({ currentUser, tasks, users, departments, t }) {
           )}
 
           <div className="mt-3 text-sm text-slate-700">
-            {todayStats.points >= (currentUser?.dailyPointsTarget || 350) && 'You have hit your daily target! Great job!'}
+            {todayStats.points >= dailyPointsTarget && 'You have hit your daily target! Great job!'}
           </div>
         </div>
 

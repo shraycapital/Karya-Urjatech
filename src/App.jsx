@@ -814,13 +814,14 @@ function KaryaApp() {
               <span className="ml-2 text-sm text-slate-500">Loading tasks...</span>
             </div>
           }>
-            <TasksTab 
+            <TasksTab
               currentUser={currentUser}
               users={users}
               departments={departments}
               tasks={tasks}
               t={t}
               openTaskId={openTaskId}
+              setOpenTaskId={setOpenTaskId}
               onTaskFeedback={showTaskFeedback}
             />
           </Suspense>
@@ -833,12 +834,13 @@ function KaryaApp() {
               <span className="ml-2 text-sm text-slate-500">Loading points...</span>
             </div>
           }>
-            <PointsTab 
+            <PointsTab
               currentUser={currentUser}
               tasks={tasks}
               users={users}
               departments={departments}
               t={t}
+              onGoToTasks={() => setActiveTab('tasks')}
             />
           </Suspense>
         )}

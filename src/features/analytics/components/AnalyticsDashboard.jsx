@@ -248,7 +248,7 @@ export default function AnalyticsDashboard({
   const metrics = useMemo(() => {
     const { tasks: periodTasks } = filteredData;
     console.log('Calculating metrics for tasks:', periodTasks.length);
-    
+
     const totalTasks = periodTasks.length;
     const completedTasks = periodTasks.filter(t => t?.status === STATUSES.COMPLETE).length;
     const ongoingTasks = periodTasks.filter(t => t?.status === STATUSES.ONGOING).length;
@@ -290,6 +290,148 @@ export default function AnalyticsDashboard({
       avgCompletionTime: avgCompletionTime.toFixed(1)
     };
   }, [filteredData]);
+
+  const usageInsights = useMemo(() => {
+    const logs = Array.isArray(filteredData.logs) ? filteredData.logs : [];
+    const userMap = new Map();
+    (users || []).forEach(user => {
+      if (user?.id !== undefined && user?.id !== null) {
+        userMap.set(String(user.id), user);
+      }
+    });
+    const actionCounts = {};
+    const userActivityMap = {};
+    let loginCount = 0;
+    let appLaunchCount = 0;
+    let missingUserId = 0;
+    let missingAction = 0;
+    let missingTimestamp = 0;
+
+    const parseTimestamp = (value) => {
+      if (!value) return null;
+
+      if (typeof value === 'object') {
+        if (value.seconds) {
+          const date = new Date(value.seconds * 1000);
+          return isNaN(date.getTime()) ? null : date;
+        }
+
+        if (typeof value.toDate === 'function') {
+          try {
+            const date = value.toDate();
+            return date instanceof Date && !isNaN(date.getTime()) ? date : null;
+          } catch (err) {
+            console.warn('Failed to parse timestamp via toDate:', err);
+            return null;
+          }
+        }
+      }
+
+      const date = new Date(value);
+      return isNaN(date.getTime()) ? null : date;
+    };
+
+    logs.forEach(log => {
+      if (!log || typeof log !== 'object') return;
+
+      const rawUserId = log.userId || log.userID || log.uid || log.user?.id || log.user?.uid || log.actorId;
+      const userId = rawUserId !== undefined && rawUserId !== null ? String(rawUserId) : null;
+      const action = log.action || log.event || log.type || log.name;
+      const timestampValue = log.timestamp || log.createdAt || log.time || log.date;
+      const timestamp = parseTimestamp(timestampValue);
+
+      if (!userId) missingUserId += 1;
+      if (!action) missingAction += 1;
+      if (!timestamp) missingTimestamp += 1;
+
+      if (action) {
+        actionCounts[action] = (actionCounts[action] || 0) + 1;
+
+        const normalized = String(action).toLowerCase();
+        if (normalized.includes('login')) {
+          loginCount += 1;
+        }
+        if (normalized.includes('launch')) {
+          appLaunchCount += 1;
+        }
+      }
+
+      if (!userId) return;
+
+      if (!userActivityMap[userId]) {
+        userActivityMap[userId] = {
+          userId,
+          totalActions: 0,
+          lastAction: null,
+          lastActiveAt: null,
+          lastActiveMs: null
+        };
+      }
+
+      const entry = userActivityMap[userId];
+      entry.totalActions += 1;
+
+      if (action) {
+        entry.lastAction = entry.lastAction || action;
+      }
+
+      if (timestamp) {
+        const ms = timestamp.getTime();
+        if (!entry.lastActiveMs || ms > entry.lastActiveMs) {
+          entry.lastActiveMs = ms;
+          entry.lastActiveAt = timestamp.toISOString();
+          entry.lastAction = action || entry.lastAction;
+        }
+      }
+    });
+
+    const uniqueActiveUsers = Object.keys(userActivityMap).length;
+    const topActions = Object.entries(actionCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([label, count]) => ({ label, count }));
+
+    const userActivityList = Object.values(userActivityMap)
+      .map(entry => {
+        const user = userMap.get(entry.userId) || {};
+        return {
+          ...entry,
+          name: user.name || user.displayName || user.fullName || user.email || 'Unknown User',
+          role: user.role || user.title || '—'
+        };
+      })
+      .sort((a, b) => (b.lastActiveMs || 0) - (a.lastActiveMs || 0));
+
+    const inactivityThresholdDays = 7;
+    const nowMs = Date.now();
+    const thresholdMs = inactivityThresholdDays * 24 * 60 * 60 * 1000;
+    const inactiveUserIds = (users || [])
+      .filter(user => user?.id !== undefined && user?.id !== null)
+      .map(user => String(user.id))
+      .filter(id => {
+        const entry = userActivityMap[id];
+        if (!entry || !entry.lastActiveMs) return true;
+        return nowMs - entry.lastActiveMs > thresholdMs;
+      });
+
+    return {
+      totalLogs: logs.length,
+      uniqueActiveUsers,
+      loginCount,
+      appLaunchCount,
+      topActions,
+      actionCounts,
+      userActivityMap,
+      userActivityList,
+      inactiveUserIds,
+      inactivityThresholdDays,
+      fieldIssues: {
+        missingUserId,
+        missingAction,
+        missingTimestamp
+      }
+    };
+  }, [filteredData.logs, users]);
 
   // User analytics
   const userAnalytics = useMemo(() => {
@@ -591,19 +733,21 @@ export default function AnalyticsDashboard({
 
       {/* Tab Content */}
       {activeTab === 'overview' && (
-        <OverviewTab 
-          metrics={metrics} 
-          trends={trends} 
+        <OverviewTab
+          metrics={metrics}
+          trends={trends}
           departmentAnalytics={departmentAnalytics}
           timeFrame={timeFrame}
+          usageInsights={usageInsights}
         />
       )}
 
       {activeTab === 'users' && (
-        <UserAnalyticsTab 
-          userAnalytics={userAnalytics} 
+        <UserAnalyticsTab
+          userAnalytics={userAnalytics}
           departments={departments}
           timeFrame={timeFrame}
+          usageInsights={usageInsights}
         />
       )}
 
@@ -628,7 +772,7 @@ export default function AnalyticsDashboard({
 }
 
 // Overview Tab Component
-function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame }) {
+function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame, usageInsights }) {
   return (
     <div className="space-y-6">
       {/* Key Metrics Cards */}
@@ -658,6 +802,8 @@ function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame }) {
           trend={trends.timeTrend}
         />
       </div>
+
+      <UsageInsightsPanel usageInsights={usageInsights} />
 
       {/* Status Breakdown */}
       <div className="bg-white rounded-lg border p-6">
@@ -702,8 +848,149 @@ function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame }) {
   );
 }
 
+function UsageInsightsPanel({ usageInsights }) {
+  const hasLogs = usageInsights?.totalLogs > 0;
+  const fieldIssues = usageInsights?.fieldIssues || {};
+  const topActions = usageInsights?.topActions || [];
+  const userActivityList = usageInsights?.userActivityList || [];
+  const inactiveCount = usageInsights?.inactiveUserIds?.length || 0;
+  const inactivityThresholdDays = usageInsights?.inactivityThresholdDays || 7;
+  const topRecentUsers = userActivityList.slice(0, 5);
+
+  return (
+    <div className="bg-white rounded-lg border p-6">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-4">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Usage Insights</h3>
+          <p className="text-sm text-gray-500">Activity signals captured from the selected period.</p>
+        </div>
+        {hasLogs && (
+          <span className="text-xs uppercase tracking-wide text-gray-500">
+            {usageInsights.totalLogs} log{usageInsights.totalLogs === 1 ? '' : 's'} analysed
+          </span>
+        )}
+      </div>
+
+      {hasLogs ? (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <UsageStatCard
+              label="Unique active users"
+              value={usageInsights.uniqueActiveUsers}
+              helper={inactiveCount > 0 ? `${inactiveCount} need follow-up` : 'All active users engaged'}
+            />
+            <UsageStatCard
+              label="Total interactions"
+              value={usageInsights.totalLogs}
+              helper="All captured actions"
+            />
+            <UsageStatCard
+              label="Login events"
+              value={usageInsights.loginCount}
+              helper="Sign-ins and re-auths"
+            />
+            <UsageStatCard
+              label="App launches"
+              value={usageInsights.appLaunchCount}
+              helper="Launch & open signals"
+            />
+          </div>
+
+          {inactiveCount > 0 && (
+            <div className="bg-orange-50 border border-orange-200 text-orange-800 text-xs rounded p-3">
+              <strong className="block text-sm mb-1">Follow-up recommended</strong>
+              {inactiveCount} user{inactiveCount === 1 ? '' : 's'} have not been active in the last {inactivityThresholdDays} days.
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-lg border border-gray-100 p-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Top actions</h4>
+              {topActions.length === 0 ? (
+                <p className="text-sm text-gray-500">No action data available for this period.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {topActions.map(({ label, count }, index) => (
+                    <li key={index} className="flex items-center justify-between text-sm">
+                      <span className="text-gray-600">{label || 'Unnamed action'}</span>
+                      <span className="font-medium text-gray-900">{count}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-gray-100 p-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Recent activity by user</h4>
+              {topRecentUsers.length === 0 ? (
+                <p className="text-sm text-gray-500">No recent user activity captured.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-xs uppercase text-gray-500">
+                      <tr>
+                        <th className="py-2 pr-4">User</th>
+                        <th className="py-2 pr-4">Last action</th>
+                        <th className="py-2 text-right">Events</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topRecentUsers.map(activity => (
+                        <tr key={activity.userId} className="border-t border-gray-100">
+                          <td className="py-2 pr-4">
+                            <div className="font-medium text-gray-900">{activity.name}</div>
+                            <div className="text-xs text-gray-500">{activity.role}</div>
+                          </td>
+                          <td className="py-2 pr-4">
+                            {activity.lastActiveAt ? (
+                              <div>
+                                <div className="text-gray-800">{formatDateTime(new Date(activity.lastActiveAt))}</div>
+                                {activity.lastAction && (
+                                  <div className="text-xs text-gray-500 mt-0.5">{activity.lastAction}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-500">No timestamp recorded</span>
+                            )}
+                          </td>
+                          <td className="py-2 text-right font-medium text-gray-900">{activity.totalActions}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-gray-50 border border-dashed border-gray-200 rounded p-4 text-sm text-gray-600">
+          No activity logs available for the selected period. Once users start interacting with the app, their activity will show up here.
+        </div>
+      )}
+
+      {(fieldIssues.missingUserId > 0 || fieldIssues.missingAction > 0 || fieldIssues.missingTimestamp > 0) && (
+        <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs rounded p-3">
+          <strong className="block text-sm mb-1">Data quality notice</strong>
+          <ul className="list-disc list-inside space-y-1">
+            {fieldIssues.missingUserId > 0 && (
+              <li>{fieldIssues.missingUserId} log{fieldIssues.missingUserId === 1 ? '' : 's'} missing a user reference</li>
+            )}
+            {fieldIssues.missingAction > 0 && (
+              <li>{fieldIssues.missingAction} log{fieldIssues.missingAction === 1 ? '' : 's'} missing an action name</li>
+            )}
+            {fieldIssues.missingTimestamp > 0 && (
+              <li>{fieldIssues.missingTimestamp} log{fieldIssues.missingTimestamp === 1 ? '' : 's'} missing a timestamp</li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // User Analytics Tab Component
-function UserAnalyticsTab({ userAnalytics, departments, timeFrame }) {
+function UserAnalyticsTab({ userAnalytics, departments, timeFrame, usageInsights }) {
   const [sortBy, setSortBy] = useState('points');
   const [filterDept, setFilterDept] = useState('all');
 
@@ -757,6 +1044,7 @@ function UserAnalyticsTab({ userAnalytics, departments, timeFrame }) {
                 <th className="text-center py-3 px-2">Efficiency</th>
                 <th className="text-center py-3 px-2">Quality</th>
                 <th className="text-center py-3 px-2">Activity</th>
+                <th className="text-center py-3 px-2">Last Active</th>
                 <th className="text-center py-3 px-2">Status</th>
               </tr>
             </thead>
@@ -790,11 +1078,10 @@ function UserAnalyticsTab({ userAnalytics, departments, timeFrame }) {
                     <ActivityBadge score={user.activityScore} />
                   </td>
                   <td className="text-center py-3 px-2">
-                    {user.overdue > 0 && (
-                      <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-xs">
-                        {user.overdue} overdue
-                      </span>
-                    )}
+                    <UserLastActiveCell user={user} usageInsights={usageInsights} />
+                  </td>
+                  <td className="text-center py-3 px-2">
+                    <UserStatusBadges user={user} usageInsights={usageInsights} />
                   </td>
                 </tr>
               ))}
@@ -946,6 +1233,18 @@ function AnomaliesTab({ anomalies, users, timeFrame }) {
 }
 
 // Helper Components
+function UsageStatCard({ label, value, helper }) {
+  const displayValue = typeof value === 'number' ? value : (value ?? '—');
+
+  return (
+    <div className="rounded-lg border border-gray-100 bg-gray-50 p-4">
+      <div className="text-xs uppercase text-gray-500">{label}</div>
+      <div className="text-2xl font-semibold text-gray-900">{displayValue}</div>
+      {helper && <div className="text-xs text-gray-500 mt-1">{helper}</div>}
+    </div>
+  );
+}
+
 function MetricCard({ title, value, icon, trend }) {
   return (
     <div className="bg-white rounded-lg border p-6">
@@ -1026,6 +1325,92 @@ function ActivityBadge({ score }) {
       {score.toFixed(0)}
     </span>
   );
+}
+
+function UserLastActiveCell({ user, usageInsights }) {
+  const { entry, lastActiveDate } = getUserActivityDetails(user, usageInsights);
+
+  if (!lastActiveDate) {
+    return <span className="text-xs text-gray-500">No activity</span>;
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <span className="font-medium text-gray-900">{formatDateTime(lastActiveDate)}</span>
+      {entry?.lastAction && (
+        <span className="text-xs text-gray-500">{entry.lastAction}</span>
+      )}
+    </div>
+  );
+}
+
+function UserStatusBadges({ user, usageInsights }) {
+  const { lastActiveDate, userKey } = getUserActivityDetails(user, usageInsights);
+  const badges = [];
+
+  if (user?.overdue > 0) {
+    badges.push({
+      key: 'overdue',
+      className: 'bg-red-100 text-red-800 px-2 py-1 rounded text-xs',
+      label: `${user.overdue} overdue`
+    });
+  }
+
+  const inactiveUserIds = usageInsights?.inactiveUserIds || [];
+  const inactivityThresholdDays = usageInsights?.inactivityThresholdDays || 7;
+  const isInactive = userKey ? inactiveUserIds.includes(userKey) : false;
+
+  if (isInactive) {
+    const diffMs = lastActiveDate ? Date.now() - lastActiveDate.getTime() : null;
+    const daysInactive = diffMs !== null ? Math.max(Math.floor(diffMs / (1000 * 60 * 60 * 24)), 0) : null;
+
+    badges.push({
+      key: 'inactive',
+      className: 'bg-orange-100 text-orange-800 px-2 py-1 rounded text-xs',
+      label: daysInactive !== null ? `Inactive ${daysInactive}d` : 'No recent activity'
+    });
+  }
+
+  if (badges.length === 0) {
+    return <span className="text-xs text-gray-500">—</span>;
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      {badges.map(badge => (
+        <span key={badge.key} className={badge.className}>{badge.label}</span>
+      ))}
+    </div>
+  );
+}
+
+function getUserActivityDetails(user, usageInsights) {
+  if (!user || user.id === undefined || user.id === null) {
+    return { entry: null, lastActiveDate: null, userKey: null };
+  }
+
+  const userKey = String(user.id);
+  const entry = usageInsights?.userActivityMap?.[userKey];
+
+  if (!entry) {
+    return { entry: null, lastActiveDate: null, userKey };
+  }
+
+  let lastActiveDate = null;
+
+  if (typeof entry.lastActiveMs === 'number') {
+    const dateFromMs = new Date(entry.lastActiveMs);
+    if (!isNaN(dateFromMs.getTime())) {
+      lastActiveDate = dateFromMs;
+    }
+  } else if (entry.lastActiveAt) {
+    const dateFromIso = new Date(entry.lastActiveAt);
+    if (!isNaN(dateFromIso.getTime())) {
+      lastActiveDate = dateFromIso;
+    }
+  }
+
+  return { entry, lastActiveDate, userKey };
 }
 
 function AnomalyCard({ anomaly, users }) {
