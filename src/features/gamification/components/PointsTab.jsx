@@ -6,121 +6,29 @@ import { getBonusClaimsInRange, getBonusPointsInRange, getPointsFromEntry, getTo
 
 function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   const [leaderboardView, setLeaderboardView] = useState('topPerformers'); // Default to top performers view
-
-  // Safety checks
-  if (!currentUser || !tasks || !users) {
-    return (
-      <div className="space-y-4 pb-20">
-        <Section title={t('points')}>
-          <div className="text-center text-slate-500 py-8">
-            {t('loading') || 'Loading...'}
-          </div>
-        </Section>
-      </div>
-    );
-  }
-
-  // Simplified date parsing for Firestore Timestamps
-  const parseDate = (dateValue) => {
-    if (!dateValue) return null;
-    
-    try {
-      // Handle Firestore Timestamp objects (primary format now)
-      if (dateValue && typeof dateValue === 'object' && typeof dateValue.toDate === 'function') {
-        return dateValue.toDate();
-      }
-      // Handle Firestore Timestamp with toMillis method
-      if (dateValue && typeof dateValue === 'object' && typeof dateValue.toMillis === 'function') {
-        return new Date(dateValue.toMillis());
-      }
-      // Handle Firestore Timestamp with seconds/nanoseconds properties
-      if (dateValue && typeof dateValue === 'object' && dateValue.seconds !== undefined) {
-        return new Date(dateValue.seconds * 1000 + (dateValue.nanoseconds || 0) / 1000000);
-      }
-      // Handle regular Date objects
-      if (dateValue instanceof Date) {
-        return dateValue;
-      }
-      
-      console.warn('Unknown date format:', dateValue, typeof dateValue);
-      return null;
-    } catch (error) {
-      console.error('Error parsing date:', dateValue, error);
-      return null;
-    }
-  };
-
-  // Get the completion date for a task (simplified since all are now timestamps)
-  const getTaskCompletionDate = (task) => {
-    if (task.completedAt) {
-      return parseDate(task.completedAt);
-    }
-    
-    // Fallback to updatedAt if completedAt is missing
-    if (task.updatedAt) {
-      return parseDate(task.updatedAt);
-    }
-    
-    // Last resort: createdAt
-    if (task.createdAt) {
-      return parseDate(task.createdAt);
-    }
-    
-    return null;
-  };
-
-  // Calculate points for a task
-  const calculateTaskPoints = (task) => {
-    if (!task.assignedUserIds || !Array.isArray(task.assignedUserIds)) return 0;
-    
-    const assignedUserCount = task.assignedUserIds.length;
-    let basePoints = 50; // Default points
-    
-    // Use task's difficulty if available
-    if (task.difficulty && DIFFICULTY_CONFIG[task.difficulty]) {
-      basePoints = DIFFICULTY_CONFIG[task.difficulty].points;
-    } else if (task.points && typeof task.points === 'number') {
-      basePoints = task.points;
-    }
-    
-    // Split points among assigned users
-    const basePointsPerUser = Math.round(basePoints / assignedUserCount);
-    
-    // Add bonuses
-    const collaborationBonus = assignedUserCount > 1 ? Math.round(basePointsPerUser * 0.1) : 0;
-    const urgentBonus = task.isUrgent ? Math.round(basePointsPerUser * 0.25) : 0;
-    
-    return basePointsPerUser + collaborationBonus + urgentBonus;
-  };
-
-  // Calculate user's completed tasks and points (excluding deleted tasks for non-admins)
-  const userCompletedTasks = tasks.filter(task => {
-    // Hide deleted tasks from regular users (only admins can see them)
-    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
-      return false;
-    }
-    
-    return task.assignedUserIds && 
-           Array.isArray(task.assignedUserIds) && 
-           task.assignedUserIds.includes(currentUser.id) && 
-           task.status === STATUSES.COMPLETE;
-  });
-
-  const currentUserBonusLedger = currentUser?.dailyBonusLedger || {};
-  const totalBonusPoints = getTotalBonusPoints(currentUserBonusLedger);
-
-  const userTotalPoints = userCompletedTasks.reduce((total, task) => {
-    return total + calculateTaskPoints(task);
-  }, 0) + totalBonusPoints;
-
-  const dailyPointsTarget = currentUser?.dailyPointsTarget || 350;
+  const [calloutDismissedToday, setCalloutDismissedToday] = useState(false);
 
   // Calculate today's points and tasks
   const todayStats = useMemo(() => {
+    if (!currentUser || !tasks) {
+      return { points: 0, tasks: 0, bonusPoints: 0 };
+    }
+    
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
+
+    const userCompletedTasks = tasks.filter(task => {
+      if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+        return false;
+      }
+      
+      return task.assignedUserIds && 
+             Array.isArray(task.assignedUserIds) && 
+             task.assignedUserIds.includes(currentUser.id) && 
+             task.status === STATUSES.COMPLETE;
+    });
 
     const todayTasks = userCompletedTasks.filter(task => {
       const completionDate = getTaskCompletionDate(task);
@@ -128,6 +36,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
     });
 
     const taskPoints = todayTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    const currentUserBonusLedger = currentUser?.dailyBonusLedger || {};
     const bonusPoints = getBonusPointsInRange(currentUserBonusLedger, todayStart, todayEnd);
 
     return {
@@ -135,9 +44,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       tasks: todayTasks.length,
       bonusPoints,
     };
-  }, [userCompletedTasks, currentUserBonusLedger]);
-
-  const pointsRemaining = Math.max(0, dailyPointsTarget - todayStats.points);
+  }, [currentUser, tasks]);
 
   const easyPendingCount = useMemo(() => {
     if (!Array.isArray(tasks) || !currentUser?.id) {
@@ -170,7 +77,116 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
     return `pointsTab.calloutDismissed.${currentUser.id}`;
   }, [currentUser?.id]);
 
-  const [calloutDismissedToday, setCalloutDismissedToday] = useState(false);
+  // Helper functions
+  const parseDate = (dateValue) => {
+    if (!dateValue) return null;
+    
+    try {
+      // Handle Firestore Timestamp objects (primary format now)
+      if (dateValue && typeof dateValue === 'object' && typeof dateValue.toDate === 'function') {
+        return dateValue.toDate();
+      }
+      // Handle Firestore Timestamp with toMillis method
+      if (dateValue && typeof dateValue === 'object' && typeof dateValue.toMillis === 'function') {
+        return new Date(dateValue.toMillis());
+      }
+      // Handle Firestore Timestamp with seconds/nanoseconds properties
+      if (dateValue && typeof dateValue === 'object' && dateValue.seconds !== undefined) {
+        return new Date(dateValue.seconds * 1000 + (dateValue.nanoseconds || 0) / 1000000);
+      }
+      // Handle regular Date objects
+      if (dateValue instanceof Date) {
+        return dateValue;
+      }
+      
+      console.warn('Unknown date format:', dateValue, typeof dateValue);
+      return null;
+    } catch (error) {
+      console.error('Error parsing date:', dateValue, error);
+      return null;
+    }
+  };
+
+  const getTaskCompletionDate = (task) => {
+    if (task.completedAt) {
+      return parseDate(task.completedAt);
+    }
+    
+    // Fallback to updatedAt if completedAt is missing
+    if (task.updatedAt) {
+      return parseDate(task.updatedAt);
+    }
+    
+    // Last resort: createdAt
+    if (task.createdAt) {
+      return parseDate(task.createdAt);
+    }
+    
+    return null;
+  };
+
+  const calculateTaskPoints = (task) => {
+    if (!task.assignedUserIds || !Array.isArray(task.assignedUserIds)) return 0;
+    
+    const assignedUserCount = task.assignedUserIds.length;
+    let basePoints = 50; // Default points
+    
+    // Use task's difficulty if available
+    if (task.difficulty && DIFFICULTY_CONFIG[task.difficulty]) {
+      basePoints = DIFFICULTY_CONFIG[task.difficulty].points;
+    } else if (task.points && typeof task.points === 'number') {
+      basePoints = task.points;
+    }
+    
+    // Split points among assigned users
+    const basePointsPerUser = Math.round(basePoints / assignedUserCount);
+    
+    // Add bonuses
+    const collaborationBonus = assignedUserCount > 1 ? Math.round(basePointsPerUser * 0.1) : 0;
+    const urgentBonus = task.isUrgent ? Math.round(basePointsPerUser * 0.25) : 0;
+    
+    return basePointsPerUser + collaborationBonus + urgentBonus;
+  };
+
+  // Safety checks
+  if (!currentUser || !tasks || !users) {
+    return (
+      <div className="space-y-4 pb-20">
+        <Section title={t('points')}>
+          <div className="text-center text-slate-500 py-8">
+            {t('loading') || 'Loading...'}
+          </div>
+        </Section>
+      </div>
+    );
+  }
+
+
+  // Calculate user's completed tasks and points (excluding deleted tasks for non-admins)
+  const userCompletedTasks = tasks.filter(task => {
+    // Hide deleted tasks from regular users (only admins can see them)
+    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+      return false;
+    }
+    
+    return task.assignedUserIds && 
+           Array.isArray(task.assignedUserIds) && 
+           task.assignedUserIds.includes(currentUser.id) && 
+           task.status === STATUSES.COMPLETE;
+  });
+
+  const currentUserBonusLedger = currentUser?.dailyBonusLedger || {};
+  const totalBonusPoints = getTotalBonusPoints(currentUserBonusLedger);
+
+  const userTotalPoints = userCompletedTasks.reduce((total, task) => {
+    return total + calculateTaskPoints(task);
+  }, 0) + totalBonusPoints;
+
+  const dailyPointsTarget = currentUser?.dailyPointsTarget || 350;
+
+  // Calculate today's points and tasks (moved to top with other hooks)
+
+  const pointsRemaining = Math.max(0, dailyPointsTarget - todayStats.points);
 
   useEffect(() => {
     if (!calloutStorageKey || typeof window === 'undefined') {
