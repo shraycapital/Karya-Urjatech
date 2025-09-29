@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
 import { db, auth, enablePushNotifications, onForegroundMessage } from './firebase';
-import { collection, onSnapshot, doc, addDoc, updateDoc, deleteDoc, getDocs, serverTimestamp, arrayUnion } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, getDocs, arrayUnion } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 
-import { subscribeTasks, createTask as addTaskData, patchTask as updateTaskData, removeTask as deleteTaskData } from './features/tasks/api/taskApi';
+import { subscribeTasks, patchTask as updateTaskData, removeTask as deleteTaskData } from './features/tasks/api/taskApi';
 import { useI18n } from './shared/i18n/translations.js';
 import Header from './shared/components/Header.jsx';
 import LoginScreen from './features/auth/LoginScreen.jsx';
@@ -42,7 +42,7 @@ const AttendanceModal = lazy(() => import('./features/attendance/components/Atte
 // ---------------------- Activity Logging ----------------------
 
 // ---------------------- Auto-save Utilities ----------------------
-const useDebouncedAutoSave = (callback, delay = 1000) => {
+const _useDebouncedAutoSave = (callback, delay = 1000) => {
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
   const timeoutRef = useRef(null);
@@ -91,7 +91,7 @@ function KaryaApp() {
   const { currentUserId, isAdminPanelOpen } = appState;
   const { t, setLanguage, language } = useI18n();
   const [dashboardDeptId, setDashboardDeptId] = useState('');
-  const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
+  const [_isCreateTaskOpen, _setIsCreateTaskOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('tasks'); // 'tasks', 'points', 'notifications'
   const [openTaskId, setOpenTaskId] = useState(null);
   const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
@@ -164,7 +164,7 @@ function KaryaApp() {
           console.warn('Anonymous sign-in failed (continuing):', e?.message);
         }
 
-        const [usersLower, usersUpper, deptLower, deptUpper, a] = await Promise.all([
+        const [usersLower, usersUpper, deptLower, deptUpper, _a] = await Promise.all([
           getDocs(collection(db, 'users')).catch(() => ({ docs: [] })),
           getDocs(collection(db, 'Users')).catch(() => ({ docs: [] })),
           getDocs(collection(db, 'departments')).catch(() => ({ docs: [] })),
@@ -318,9 +318,9 @@ function KaryaApp() {
   const { 
     isRefreshing, 
     refreshProgress, 
-    lastRefresh, 
-    performSmartRefresh, 
-    forceRefresh, 
+    lastRefresh: _lastRefresh, 
+    performSmartRefresh: _performSmartRefresh, 
+    forceRefresh: _forceRefresh, 
     pullDistance 
   } = useSmartRefresh({
     tasks: refreshTasks,
