@@ -4,6 +4,8 @@ import TaskForm from './TaskForm';
 import TaskList from './TaskList';
 import RequestModal from './RequestModal';
 import ScheduledTasksList from './ScheduledTasksList';
+import ApprovalPanel from './ApprovalPanel';
+import EditTaskModal from './EditTaskModal';
 import { toISTISOString } from '../../../shared/utils/date';
 import Section from '../../../shared/components/Section.jsx';
 import { logActivity } from '../../../shared/utils/activityLogger.js';
@@ -125,6 +127,7 @@ const formatDueTimeline = (now, target) => {
 function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOpenTaskId, onTaskFeedback, onLogActivity = null }) {
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState([STATUSES.PENDING, STATUSES.ONGOING]); // Array of selected statuses, default to pending and ongoing
+  const [searchQuery, setSearchQuery] = useState(''); // Search query for tasks
   const [isSyncing, setIsSyncing] = useState(false);
   const [bonusLedger, setBonusLedger] = useState(() => currentUser?.dailyBonusLedger || {});
   const [isClaimingBonus, setIsClaimingBonus] = useState(false);
@@ -133,6 +136,10 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   const [showDueSoonOnly, setShowDueSoonOnly] = useState(false);
   const [dismissedSignature, setDismissedSignature] = useState(null);
   const alertStorageKey = currentUser?.id ? `task_priority_nudge_${currentUser.id}` : null;
+  
+  // Edit task modal state
+  const [editingTask, setEditingTask] = useState(null);
+  const [isEditTaskModalOpen, setIsEditTaskModalOpen] = useState(false);
 
   // Allow user to edit daily target with a weekly lock (until next Monday)
   const [isEditingTarget, setIsEditingTarget] = useState(false);
@@ -417,7 +424,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   const handleDeleteTask = async (taskId, deleteReason = 'No reason provided') => {
     try {
       const task = tasks.find(t => t.id === taskId);
-      await deleteTask(taskId, deleteReason);
+      await deleteTask(taskId, currentUser?.id || 'system', currentUser?.name || currentUser?.username || 'System', deleteReason);
       if (onTaskFeedback) {
         onTaskFeedback('Task deleted successfully!', 'success');
       }
@@ -503,6 +510,114 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment. Please try again.');
+    }
+  };
+
+  // Handle task approval (for self-assigned tasks)
+  const handleApproveTask = async (taskId) => {
+    try {
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        console.error('Task not found');
+        return;
+      }
+
+      // Update task with approval information
+      await updateTask(taskId, {
+        needsApproval: false,
+        approvedBy: currentUser.id,
+        approvedByName: currentUser.name,
+        approvedAt: new Date().toISOString()
+      }, currentUser.id);
+
+      if (onTaskFeedback) {
+        onTaskFeedback('Task approved successfully!', 'success');
+      }
+
+      // Log activity
+      if (onLogActivity) {
+        onLogActivity('approve_task', 'task', taskId, task.title, currentUser.id, currentUser.name, {
+          approvedFor: task.assignedById,
+          approvedForName: task.assignedByName
+        });
+      }
+    } catch (error) {
+      console.error('Error approving task:', error);
+      if (onTaskFeedback) {
+        onTaskFeedback('Failed to approve task. Please try again.', 'error');
+      }
+    }
+  };
+
+  // Handle rejecting a task
+  const handleRejectTask = async (taskId) => {
+    try {
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) {
+        console.error('Task not found');
+        return;
+      }
+
+      // Update task with rejection information
+      await updateTask(taskId, {
+        needsApproval: false,
+        rejectedBy: currentUser.id,
+        rejectedByName: currentUser.name,
+        rejectedAt: new Date().toISOString(),
+        status: 'Rejected'
+      }, currentUser.id);
+
+      if (onTaskFeedback) {
+        onTaskFeedback('Task rejected successfully!', 'success');
+      }
+
+      // Log activity
+      if (onLogActivity) {
+        onLogActivity('reject_task', 'task', taskId, task.title, currentUser.id, currentUser.name, {
+          rejectedFor: task.assignedById,
+          rejectedForName: task.assignedByName
+        });
+      }
+    } catch (error) {
+      console.error('Error rejecting task:', error);
+      if (onTaskFeedback) {
+        onTaskFeedback('Failed to reject task. Please try again.', 'error');
+      }
+    }
+  };
+
+  // Handle editing a task (opens edit modal)
+  const handleEditTask = (taskId) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (task) {
+      // Set the task for editing - this will open the edit modal
+      setEditingTask(task);
+      setIsEditTaskModalOpen(true);
+    }
+  };
+
+  // Handle dismissing approval request
+  const handleDismissApproval = (taskId) => {
+    // Store dismissed approval in localStorage to prevent showing again
+    const storageKey = `kartavya_dismissed_approval_${currentUser.id}`;
+    try {
+      const existing = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      if (!existing.includes(taskId)) {
+        existing.push(taskId);
+        localStorage.setItem(storageKey, JSON.stringify(existing));
+      }
+    } catch (error) {
+      console.error('Error storing dismissed approval:', error);
+    }
+
+    // Log activity
+    if (onLogActivity) {
+      const task = tasks.find(t => t.id === taskId);
+      if (task) {
+        onLogActivity('dismiss_approval', 'task', taskId, task.title, currentUser.id, currentUser.name, {
+          action: 'dismissed_approval_request'
+        });
+      }
     }
   };
 
@@ -688,12 +803,92 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
     }
   }, [hasPriorityTasks, prioritySignature, alertStorageKey, nextTask, logNudgeEngagement, setDismissedSignature]);
 
-  // Apply status filter to myTasks
-  const filteredTasks = myTasks.filter((task) => {
-    const matchesStatus = statusFilter.length === 0 || statusFilter.includes(task.status);
-    const matchesDueSoon = !showDueSoonOnly || dueSoonTaskIds.has(task.id);
-    return matchesStatus && matchesDueSoon;
-  });
+  // Search function for comprehensive task search
+  const searchTasks = useCallback((tasks, query) => {
+    if (!query.trim()) return tasks;
+    
+    const searchTerm = query.toLowerCase().trim();
+    
+    return tasks.filter((task) => {
+      // Search in task title
+      if (task.title?.toLowerCase().includes(searchTerm)) return true;
+      
+      // Search in task description
+      if (task.description?.toLowerCase().includes(searchTerm)) return true;
+      
+      // Search in task notes
+      if (task.notes && Array.isArray(task.notes)) {
+        const notesText = task.notes.map(note => note.text || '').join(' ').toLowerCase();
+        if (notesText.includes(searchTerm)) return true;
+      }
+      
+      // Search in assigned user names
+      if (task.assignedUserIds && Array.isArray(task.assignedUserIds)) {
+        const assignedUserNames = task.assignedUserIds
+          .map(userId => {
+            const user = users.find(u => u.id === userId);
+            return user ? (user.name || user.username || '').toLowerCase() : '';
+          })
+          .join(' ');
+        if (assignedUserNames.includes(searchTerm)) return true;
+      }
+      
+      // Search in assigned by name
+      if (task.assignedByName?.toLowerCase().includes(searchTerm)) return true;
+      
+      // Search in department name
+      if (task.departmentId) {
+        const department = departments.find(d => d.id === task.departmentId);
+        if (department?.name?.toLowerCase().includes(searchTerm)) return true;
+      }
+      
+      // Search in task status
+      if (task.status?.toLowerCase().includes(searchTerm)) return true;
+      
+      // Search in task difficulty
+      if (task.difficulty?.toLowerCase().includes(searchTerm)) return true;
+      
+      // Search in task points
+      if (task.points?.toString().includes(searchTerm)) return true;
+      
+      // Search in target date (formatted)
+      if (task.targetDate) {
+        const targetDate = parseDate(task.targetDate);
+        if (targetDate) {
+          const formattedDate = targetDate.toLocaleDateString().toLowerCase();
+          if (formattedDate.includes(searchTerm)) return true;
+        }
+      }
+      
+      // Search in creation date (formatted)
+      if (task.createdAt) {
+        const createdDate = parseDate(task.createdAt);
+        if (createdDate) {
+          const formattedDate = createdDate.toLocaleDateString().toLowerCase();
+          if (formattedDate.includes(searchTerm)) return true;
+        }
+      }
+      
+      // Search in deletion reason (for deleted tasks)
+      if (task.deleteReason?.toLowerCase().includes(searchTerm)) return true;
+      
+      return false;
+    });
+  }, [users, departments]);
+
+  // Apply status filter and search to myTasks
+  const filteredTasks = useMemo(() => {
+    let filtered = myTasks.filter((task) => {
+      const matchesStatus = statusFilter.length === 0 || statusFilter.includes(task.status);
+      const matchesDueSoon = !showDueSoonOnly || dueSoonTaskIds.has(task.id);
+      return matchesStatus && matchesDueSoon;
+    });
+    
+    // Apply search filter
+    filtered = searchTasks(filtered, searchQuery);
+    
+    return filtered;
+  }, [myTasks, statusFilter, showDueSoonOnly, dueSoonTaskIds, searchTasks, searchQuery]);
   
   // Sorting helpers
   const getRelevantDate = (t) => {
@@ -717,6 +912,8 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
     pending: myTasks.filter(t => t && t.status === STATUSES.PENDING).length,
     ongoing: myTasks.filter(t => t && t.status === STATUSES.ONGOING).length,
     complete: myTasks.filter(t => t && t.status === STATUSES.COMPLETE).length,
+    rejected: myTasks.filter(t => t && t.status === STATUSES.REJECTED).length,
+    deleted: myTasks.filter(t => t && t.status === STATUSES.DELETED).length,
     total: myTasks.length
   };
 
@@ -724,6 +921,18 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   return (
     <div className="space-y-4 pb-20">
         <Section title={t('myTasks')}>
+          {/* Approval Panel for Department Heads */}
+          <ApprovalPanel
+            tasks={tasks}
+            currentUser={currentUser}
+            users={users}
+            onApprove={handleApproveTask}
+            onReject={handleRejectTask}
+            onEdit={handleEditTask}
+            onDismiss={handleDismissApproval}
+            t={t}
+          />
+          
           {shouldShowPriorityPanel && (
             <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
@@ -844,7 +1053,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
           </div>
 
           <div className="relative mt-4">
-            {isCelebratingBonus && (
+            {isCelebratingBonus && !hasClaimedDailyBonus && (
               <>
                 <span className="pointer-events-none absolute -top-2 left-6 h-3 w-3 rounded-full bg-pink-400/80 animate-ping"></span>
                 <span className="pointer-events-none absolute -bottom-3 right-8 h-3 w-3 rounded-full bg-amber-300/80 animate-ping delay-150"></span>
@@ -855,29 +1064,60 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
                 </div>
               </>
             )}
-            <button
-              type="button"
-              onClick={handleClaimDailyBonus}
-              disabled={isClaimingBonus || hasClaimedDailyBonus}
-              className={`w-full transform rounded-lg px-4 py-2 text-base font-semibold text-white transition-all duration-200 flex items-center justify-center gap-2 ${
-                hasClaimedDailyBonus
-                  ? 'bg-slate-400 cursor-not-allowed'
-                  : 'bg-brand-600 hover:bg-brand-700'
-              } ${isClaimingBonus ? 'opacity-80 cursor-wait' : ''} ${isCelebratingBonus ? 'scale-105 shadow-lg' : 'shadow-md'}`}
-            >
-              <span>{hasClaimedDailyBonus ? t('dailyBonusClaimed', 'Bonus claimed!') : t('claimDailyBonus', 'Claim Daily Bonus')}</span>
-              {!hasClaimedDailyBonus && (
+            {!hasClaimedDailyBonus && (
+              <button
+                type="button"
+                onClick={handleClaimDailyBonus}
+                disabled={isClaimingBonus}
+                className={`w-full transform rounded-lg px-4 py-2 text-base font-semibold text-white transition-all duration-200 flex items-center justify-center gap-2 ${
+                  'bg-brand-600 hover:bg-brand-700'
+                } ${isClaimingBonus ? 'opacity-80 cursor-wait' : ''} ${isCelebratingBonus ? 'scale-105 shadow-lg' : 'shadow-md'}`}
+              >
+                <span>{t('claimDailyBonus', 'Claim Daily Bonus')}</span>
                 <span className="text-sm font-bold">+{DAILY_BONUS_POINTS}</span>
+                {isClaimingBonus && (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent"></span>
+                )}
+              </button>
+            )}
+            {!hasClaimedDailyBonus && (
+              <p className="mt-2 text-center text-xs text-slate-600">
+                {t('dailyBonusHint', 'Tap once a day to grab an extra 25 points.')}
+              </p>
+            )}
+          </div>
+
+          {/* Search Bar */}
+          <div className="mb-4">
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <input
+                type="text"
+                placeholder={t('searchTasks') || 'Search tasks by title, description, assignee, department, status...'}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-sm"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               )}
-              {isClaimingBonus && (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/70 border-t-transparent"></span>
-              )}
-            </button>
-            <p className="mt-2 text-center text-xs text-slate-600">
-              {hasClaimedDailyBonus
-                ? t('dailyBonusComeBack', 'Come back tomorrow for another boost!')
-                : t('dailyBonusHint', 'Tap once a day to grab an extra 25 points.')}
-            </p>
+            </div>
+            {searchQuery && (
+              <p className="mt-1 text-xs text-gray-500">
+                {t('searchResults') || 'Search results'}: {filteredTasks.length} {t('tasks') || 'tasks'} found
+              </p>
+            )}
           </div>
 
           {/* Filter Buttons */}
@@ -931,6 +1171,24 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
                   onClick={() => {
                     setShowDueSoonOnly(false);
                     setStatusFilter(prev => prev.includes(STATUSES.COMPLETE) ? prev.filter(s => s !== STATUSES.COMPLETE) : [...prev, STATUSES.COMPLETE]);
+                  }}
+                />
+                <FilterButton
+                  label={t('rejected') || 'Rejected'}
+                  count={taskStats.rejected}
+                  isActive={statusFilter.includes(STATUSES.REJECTED)}
+                  onClick={() => {
+                    setShowDueSoonOnly(false);
+                    setStatusFilter(prev => prev.includes(STATUSES.REJECTED) ? prev.filter(s => s !== STATUSES.REJECTED) : [...prev, STATUSES.REJECTED]);
+                  }}
+                />
+                <FilterButton
+                  label={t('deleted') || 'Deleted'}
+                  count={taskStats.deleted}
+                  isActive={statusFilter.includes(STATUSES.DELETED)}
+                  onClick={() => {
+                    setShowDueSoonOnly(false);
+                    setStatusFilter(prev => prev.includes(STATUSES.DELETED) ? prev.filter(s => s !== STATUSES.DELETED) : [...prev, STATUSES.DELETED]);
                   }}
                 />
               </div>
@@ -1041,6 +1299,23 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
               </div>
             </div>
           </div>
+        )}
+
+        {/* Edit Task Modal */}
+        {isEditTaskModalOpen && editingTask && (
+          <EditTaskModal
+            task={editingTask}
+            currentUser={currentUser}
+            users={users}
+            departments={departments}
+            onSave={handleUpdateTask}
+            onDelete={(taskId, deleteReason) => handleDeleteTask(taskId, deleteReason)}
+            onClose={() => {
+              setIsEditTaskModalOpen(false);
+              setEditingTask(null);
+            }}
+            t={t}
+          />
         )}
 
         {/* Floating Action Button */}

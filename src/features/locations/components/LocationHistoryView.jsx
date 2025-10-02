@@ -22,7 +22,6 @@ const loadGoogleMaps = () => {
     (typeof process !== 'undefined' && process.env.REACT_APP_GOOGLE_MAPS_API_KEY);
 
   if (!apiKey) {
-    console.warn('Google Maps API key not configured.');
     return Promise.reject(new Error('GOOGLE_MAPS_API_KEY missing'));
   }
 
@@ -267,7 +266,7 @@ const LocationHistoryView = ({
         renderMarkers(google);
       })
       .catch((error) => {
-        console.error('Failed to initialise Google Maps:', error);
+        // Handle Google Maps initialization error silently
       });
   }, [processedRecords, mapId]);
 

@@ -1,3 +1,7 @@
+// ⚠️ CRITICAL: All dates in this app use Firestore timestamp format
+// Format: { seconds: number, nanoseconds: number }
+// See FIRESTORE_TIMESTAMP_GUIDE.md for complete documentation
+
 import { db } from '../../../firebase';
 import { collection, onSnapshot, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, getDocs, getDoc, Timestamp } from 'firebase/firestore';
 import { toISTISOString } from '../../../shared/utils/date';
@@ -59,6 +63,17 @@ export const createTask = async (taskData, currentUserId, currentUserName) => {
     throw new Error('Missing required fields: title, departmentId, assignedUserIds');
   }
   
+  // Check if user is assigning task to themselves (self-assignment)
+  // This includes cases where they assign to themselves AND others
+  const isSelfAssigned = taskData.assignedUserIds.includes(currentUserId);
+  
+  // Get user role to determine if approval is needed
+  // Heads, Management, and Admins don't need approval for their self-assigned tasks
+  const needsApproval = isSelfAssigned && 
+    taskData.assignedUserRole !== 'Head' && 
+    taskData.assignedUserRole !== 'Management' && 
+    taskData.assignedUserRole !== 'Admin';
+  
   const payload = {
     ...taskData,
     createdAt: serverTimestamp(),
@@ -85,6 +100,11 @@ export const createTask = async (taskData, currentUserId, currentUserName) => {
     originalAssignedUsers: taskData.originalAssignedUsers || [],
     difficulty: taskData.difficulty || null,
     points: taskData.points || null,
+    // Self-assigned tasks need approval from department heads (except for Heads, Management, Admins)
+    needsApproval: needsApproval,
+    approvedBy: null,
+    approvedAt: null,
+    approvedByName: null,
   };
   const res = await addDoc(getPrimaryCollection(), payload);
   
@@ -174,19 +194,30 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
     const deletedAt = new Date();
     const deleteNote = `Task deleted on ${deletedAt.toLocaleDateString()} at ${deletedAt.toLocaleTimeString()} by ${currentUserName}. Reason: ${deleteReason}`;
     
-    // Add the deletion note to existing notes
-    const existingNotes = currentTask.notes || '';
-    const updatedNotes = existingNotes ? `${existingNotes}\n\n--- DELETION ---\n${deleteNote}` : deleteNote;
+    // Add the deletion note to existing notes array
+    const existingNotes = Array.isArray(currentTask.notes) ? currentTask.notes : [];
+    const updatedNotes = [
+      ...existingNotes,
+      {
+        text: deleteNote,
+        type: 'deletion',
+        timestamp: new Date().toISOString(),
+        userId: currentUserId,
+        userName: currentUserName
+      }
+    ];
     
     // Update the task with deleted status and reason
-    await updateDoc(doc(getPrimaryCollection(), taskId), {
+    const updateData = {
       status: 'Deleted',
       deletedAt: serverTimestamp(),
       deletedBy: currentUserId,
       deletedByName: currentUserName,
       deleteReason: deleteReason,
       notes: updatedNotes
-    });
+    };
+    
+    await updateDoc(doc(getPrimaryCollection(), taskId), updateData);
     
     // Log task deletion activity
     try {

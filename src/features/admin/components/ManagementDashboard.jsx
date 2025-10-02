@@ -806,7 +806,7 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                                 <span className="text-lg">{getUrgencyIcon(task)}</span>
                                 <div>
                                   <div className="font-medium text-gray-900">{task.title}</div>
-                                  {task.notes && task.notes.length > 0 && (
+                                  {task.notes && Array.isArray(task.notes) && task.notes.length > 0 && task.notes[0]?.text && (
                                     <div className="text-sm text-gray-500 line-clamp-1">{task.notes[0].text}</div>
                                   )}
                                 </div>
@@ -965,7 +965,7 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
               </div>
               
               {/* Notes Section */}
-              {selectedTask.notes && selectedTask.notes.length > 0 && (
+              {selectedTask.notes && Array.isArray(selectedTask.notes) && selectedTask.notes.length > 0 && (
                 <div>
                   <h4 className="font-medium text-gray-900 mb-2">Notes</h4>
                   <div className="space-y-2">

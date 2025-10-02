@@ -1,5 +1,9 @@
+// ⚠️ CRITICAL: All dates in this app use Firestore timestamp format
+// Format: { seconds: number, nanoseconds: number }
+// See FIRESTORE_TIMESTAMP_GUIDE.md for complete documentation
+
 import React, { useState, useMemo, useEffect } from 'react';
-import { formatDateTime, formatDateOnly } from '../../../shared/utils/date';
+import { formatDateTime, formatDateOnly, parseFirestoreTimestamp } from '../../../shared/utils/date';
 import { STATUSES, DIFFICULTY_CONFIG, ROLES } from '../../../shared/constants';
 
 // Analytics Dashboard with comprehensive insights
@@ -11,14 +15,6 @@ export default function AnalyticsDashboard({
   t,
   activityLogs = [] 
 }) {
-  // Debug logging
-  console.log('Analytics Dashboard Props:', {
-    tasksCount: tasks.length,
-    usersCount: users.length,
-    departmentsCount: departments.length,
-    activityLogsCount: activityLogs.length,
-    currentUser: currentUser?.name
-  });
   const [timeFrame, setTimeFrame] = useState('month'); // daily, week, month - default to month for more data
   const [selectedPeriod, setSelectedPeriod] = useState(() => {
     // Find the most recent period with data
@@ -80,10 +76,7 @@ export default function AnalyticsDashboard({
           .filter(date => date !== null)
           .sort((a, b) => b - a); // Sort descending (most recent first)
         
-        console.log('Valid task dates found:', validTaskDates.length, validTaskDates.slice(0, 5));
-        
         if (validTaskDates.length === 0) {
-          console.log('No valid task dates found');
           return;
         }
         
@@ -92,8 +85,6 @@ export default function AnalyticsDashboard({
         const year = mostRecentDate.getFullYear();
         const month = mostRecentDate.getMonth() + 1;
         const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-        
-        console.log('Setting period to:', monthStr, 'based on most recent date:', mostRecentDate);
         
         setTimeFrame('month');
         setSelectedPeriod(monthStr);
@@ -119,8 +110,6 @@ export default function AnalyticsDashboard({
 
   // Filter data by time period
   const filteredData = useMemo(() => {
-    console.log('Filtering data for period:', { timeFrame, selectedPeriod });
-    
     const now = new Date();
     let startDate, endDate;
 
@@ -140,7 +129,6 @@ export default function AnalyticsDashboard({
         
         // Validate the parsed values
         if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
-          console.error('Invalid month period:', selectedPeriod);
           startDate = new Date();
           endDate = new Date();
         } else {
@@ -148,8 +136,6 @@ export default function AnalyticsDashboard({
           endDate = new Date(yearNum, monthNum, 1);
         }
       }
-
-      console.log('Date range:', { startDate, endDate });
 
       const tasksInPeriod = (tasks || []).filter(task => {
         if (!task) return false;
@@ -198,22 +184,7 @@ export default function AnalyticsDashboard({
           taskDate = new Date();
         }
         
-        const isValid = !isNaN(taskDate.getTime()) && taskDate >= startDate && taskDate < endDate;
-        
-        // Debug logging for first few tasks (with safe date handling)
-        if (tasks.indexOf(task) < 3) {
-          console.log('Task date check:', {
-            taskTitle: task.title?.substring(0, 20),
-            createdAt: task.createdAt,
-            timestamp: task.timestamp,
-            taskDate: isValid ? taskDate.toISOString() : 'Invalid Date',
-            startDate: !isNaN(startDate.getTime()) ? startDate.toISOString() : 'Invalid Start Date',
-            endDate: !isNaN(endDate.getTime()) ? endDate.toISOString() : 'Invalid End Date',
-            isValid
-          });
-        }
-        
-        return isValid;
+        return !isNaN(taskDate.getTime()) && taskDate >= startDate && taskDate < endDate;
       });
 
       const logsInPeriod = (activityLogs || []).filter(log => {
@@ -221,13 +192,6 @@ export default function AnalyticsDashboard({
         const logDate = new Date(log.timestamp);
         const isValid = !isNaN(logDate.getTime()) && logDate >= startDate && logDate < endDate;
         return isValid;
-      });
-
-      console.log('Filtered results:', {
-        tasksInPeriod: tasksInPeriod.length,
-        logsInPeriod: logsInPeriod.length,
-        totalTasks: tasks.length,
-        totalLogs: activityLogs.length
       });
 
       // Always return the filtered data, don't fall back to all tasks
@@ -239,7 +203,6 @@ export default function AnalyticsDashboard({
         isFallback: false
       };
     } catch (error) {
-      console.error('Error filtering data:', error);
       return { tasks: [], logs: [], startDate: now, endDate: now, isFallback: false };
     }
   }, [tasks, activityLogs, timeFrame, selectedPeriod]);
@@ -247,7 +210,6 @@ export default function AnalyticsDashboard({
   // Core metrics calculation
   const metrics = useMemo(() => {
     const { tasks: periodTasks } = filteredData;
-    console.log('Calculating metrics for tasks:', periodTasks.length);
 
     const totalTasks = periodTasks.length;
     const completedTasks = periodTasks.filter(t => t?.status === STATUSES.COMPLETE).length;
@@ -507,40 +469,16 @@ export default function AnalyticsDashboard({
     }).sort((a, b) => b.points - a.points);
   }, [departments, users, filteredData]);
 
-  // Trend analysis
-  const trends = useMemo(() => {
-    return calculateTrends(tasks, timeFrame, selectedPeriod);
+  // Trend analysis with timeline data
+  const trendData = useMemo(() => {
+    return calculateTrendsWithBuckets(tasks, timeFrame, selectedPeriod);
   }, [tasks, timeFrame, selectedPeriod]);
-
-  // Show debug info if no data
-  const showDebugInfo = tasks.length === 0 && users.length === 0;
+  
+  const trends = trendData.trends;
+  const timelineSeries = trendData.timelineSeries;
 
   return (
     <div className="space-y-6 p-4">
-      {/* Debug Info Panel */}
-      {showDebugInfo && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
-          <h3 className="text-lg font-semibold text-yellow-800 mb-2">📊 Analytics Debug Information</h3>
-          <div className="text-sm text-yellow-700 space-y-1">
-            <p><strong>Tasks:</strong> {tasks.length} items</p>
-            <p><strong>Users:</strong> {users.length} items</p>
-            <p><strong>Departments:</strong> {departments.length} items</p>
-            <p><strong>Activity Logs:</strong> {activityLogs.length} items</p>
-            <p><strong>Current User:</strong> {currentUser?.name || 'Not set'}</p>
-            <p><strong>Time Frame:</strong> {timeFrame}</p>
-            <p><strong>Selected Period:</strong> {selectedPeriod}</p>
-          </div>
-          <div className="mt-3 p-3 bg-yellow-100 rounded text-xs">
-            <p><strong>Firestore Connection Issue:</strong> The error "ERR_BLOCKED_BY_CLIENT" suggests that:</p>
-            <ul className="list-disc list-inside mt-1 space-y-1">
-              <li>Ad blocker is blocking Firestore requests (most common)</li>
-              <li>Browser security settings are preventing Firebase connections</li>
-              <li>Corporate firewall is blocking googleapis.com</li>
-            </ul>
-            <p className="mt-2"><strong>Solution:</strong> Try disabling ad blocker or use incognito mode.</p>
-          </div>
-        </div>
-      )}
 
       {/* No Data Notification */}
       {filteredData.tasks.length === 0 && tasks.length > 0 && (
@@ -551,25 +489,6 @@ export default function AnalyticsDashboard({
               <strong>No tasks found in selected period:</strong> No tasks were created during the selected {timeFrame} period ({formatPeriodDisplay(selectedPeriod, timeFrame)}). 
               Try selecting a different time period or check if tasks have proper creation dates.
             </p>
-          </div>
-          {/* Debug Information */}
-          <div className="mt-3 p-3 bg-yellow-100 rounded text-xs">
-            <p><strong>Debug Info:</strong></p>
-            <p>Selected period: {selectedPeriod} ({timeFrame})</p>
-            <p>Date range: {filteredData.startDate && !isNaN(filteredData.startDate.getTime()) ? filteredData.startDate.toISOString().split('T')[0] : 'Invalid'} to {filteredData.endDate && !isNaN(filteredData.endDate.getTime()) ? filteredData.endDate.toISOString().split('T')[0] : 'Invalid'}</p>
-            <p>Total tasks in system: {tasks.length}</p>
-            {tasks.length > 0 && (
-              <div>
-                <p>Sample task dates:</p>
-                <ul className="list-disc list-inside ml-2">
-                  {tasks.slice(0, 3).map((task, i) => (
-                    <li key={i}>
-                      Task "{task.title?.substring(0, 20)}..." - {task.createdAt ? (() => { const d = new Date(task.createdAt); return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : 'Invalid Date'; })() : 'No date'}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
           <div className="mt-3 flex gap-2">
             <button
@@ -640,9 +559,6 @@ export default function AnalyticsDashboard({
                   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
                   setTimeFrame('month');
                   setSelectedPeriod(monthStr);
-                  console.log('Found data period:', monthStr, 'with', validTaskDates.length, 'valid dates');
-                } else {
-                  console.log('No valid task dates found');
                 }
               }}
               className="px-3 py-1 bg-purple-600 text-white text-xs rounded hover:bg-purple-700"
@@ -739,6 +655,7 @@ export default function AnalyticsDashboard({
           departmentAnalytics={departmentAnalytics}
           timeFrame={timeFrame}
           usageInsights={usageInsights}
+          timelineSeries={timelineSeries}
         />
       )}
 
@@ -772,7 +689,7 @@ export default function AnalyticsDashboard({
 }
 
 // Overview Tab Component
-function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame, usageInsights }) {
+function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame, usageInsights, timelineSeries }) {
   return (
     <div className="space-y-6">
       {/* Key Metrics Cards */}
@@ -802,6 +719,10 @@ function OverviewTab({ metrics, trends, departmentAnalytics, timeFrame, usageIns
           trend={trends.timeTrend}
         />
       </div>
+
+
+      {/* Trend Timeline Chart */}
+      <TrendTimeline timelineSeries={timelineSeries} timeFrame={timeFrame} />
 
       <UsageInsightsPanel usageInsights={usageInsights} />
 
@@ -1579,62 +1500,109 @@ function detectAnomalies(userAnalytics, filteredData, users) {
   });
 }
 
-function calculateTrends(tasks, timeFrame, selectedPeriod) {
-  // Compare with previous period
-  const now = new Date();
-  let currentStart, currentEnd, prevStart, prevEnd;
+function calculateTrendsWithBuckets(tasks, timeFrame, selectedPeriod) {
+  // Generate chronological buckets based on timeFrame
+  const buckets = generateChronologicalBuckets(timeFrame, selectedPeriod);
   
-  if (timeFrame === 'daily') {
-    currentStart = new Date(selectedPeriod);
-    currentEnd = new Date(selectedPeriod);
-    currentEnd.setDate(currentEnd.getDate() + 1);
+  // Process tasks into buckets
+  const bucketData = buckets.map(bucket => {
+    const bucketTasks = tasks.filter(task => {
+      // Use the centralized Firestore timestamp parser
+      const taskDate = parseFirestoreTimestamp(task.createdAt || task.timestamp);
+      if (!taskDate) return false; // No valid date available
+      
+      return taskDate >= bucket.start && taskDate < bucket.end;
+    });
     
-    prevStart = new Date(currentStart);
-    prevStart.setDate(prevStart.getDate() - 1);
-    prevEnd = new Date(currentStart);
-  } else if (timeFrame === 'week') {
-    currentStart = new Date(selectedPeriod);
-    currentEnd = new Date(selectedPeriod);
-    currentEnd.setDate(currentEnd.getDate() + 7);
+    const completedTasks = bucketTasks.filter(task => task.status === STATUSES.COMPLETE);
+    const completedPoints = completedTasks.reduce((sum, task) => sum + (task.points || 0), 0);
     
-    prevStart = new Date(currentStart);
-    prevStart.setDate(prevStart.getDate() - 7);
-    prevEnd = new Date(currentStart);
-  } else if (timeFrame === 'month') {
-    const [year, month] = selectedPeriod.split('-');
-    currentStart = new Date(year, month - 1, 1);
-    currentEnd = new Date(year, month, 1);
+    const bucketResult = {
+      label: bucket.label,
+      start: bucket.start,
+      end: bucket.end,
+      tasksCreated: bucketTasks.length,
+      tasksCompleted: completedTasks.length,
+      pointsEarned: completedPoints,
+      activityLogCount: bucketTasks.length, // Simplified - could be enhanced with actual activity log data
+    };
     
-    prevStart = new Date(year, month - 2, 1);
-    prevEnd = new Date(year, month - 1, 1);
-  }
-  
-  const currentTasks = tasks.filter(t => {
-    const taskDate = new Date(t.createdAt || t.timestamp);
-    return taskDate >= currentStart && taskDate < currentEnd;
+    return bucketResult;
   });
   
-  const prevTasks = tasks.filter(t => {
-    const taskDate = new Date(t.createdAt || t.timestamp);
-    return taskDate >= prevStart && taskDate < prevEnd;
-  });
+  // Calculate percentage trends (comparing current period with previous)
+  const currentPeriod = bucketData[bucketData.length - 1];
+  const previousPeriod = bucketData[bucketData.length - 2];
   
   const calculateTrend = (current, previous) => {
-    if (previous === 0) return current > 0 ? 100 : 0;
+    if (!previous || previous === 0) return current > 0 ? 100 : 0;
     return ((current - previous) / previous * 100).toFixed(1);
   };
   
-  return {
-    tasksTrend: calculateTrend(currentTasks.length, prevTasks.length),
-    completionTrend: calculateTrend(
-      currentTasks.filter(t => t.status === STATUSES.COMPLETE).length,
-      prevTasks.filter(t => t.status === STATUSES.COMPLETE).length
-    ),
-    pointsTrend: calculateTrend(
-      currentTasks.filter(t => t.status === STATUSES.COMPLETE).reduce((sum, t) => sum + (t.points || 0), 0),
-      prevTasks.filter(t => t.status === STATUSES.COMPLETE).reduce((sum, t) => sum + (t.points || 0), 0)
-    )
+  const trends = {
+    tasksTrend: calculateTrend(currentPeriod?.tasksCreated || 0, previousPeriod?.tasksCreated || 0),
+    completionTrend: calculateTrend(currentPeriod?.tasksCompleted || 0, previousPeriod?.tasksCompleted || 0),
+    pointsTrend: calculateTrend(currentPeriod?.pointsEarned || 0, previousPeriod?.pointsEarned || 0)
   };
+  
+  return {
+    trends,
+    timelineSeries: bucketData
+  };
+}
+
+function generateChronologicalBuckets(timeFrame, selectedPeriod) {
+  const buckets = [];
+  
+  if (timeFrame === 'daily') {
+    // Generate daily buckets for the past 7 days
+    const endDate = new Date(selectedPeriod);
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(endDate);
+      date.setDate(date.getDate() - i);
+      const nextDate = new Date(date);
+      nextDate.setDate(nextDate.getDate() + 1);
+      
+      buckets.push({
+        label: formatDateOnly(date),
+        start: date,
+        end: nextDate
+      });
+    }
+  } else if (timeFrame === 'week') {
+    // Generate weekly buckets for the past 4 weeks
+    const endDate = new Date(selectedPeriod);
+    for (let i = 3; i >= 0; i--) {
+      const weekStart = new Date(endDate);
+      weekStart.setDate(weekStart.getDate() - (i * 7));
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+      
+      buckets.push({
+        label: `Week ${formatDateOnly(weekStart)}`,
+        start: weekStart,
+        end: weekEnd
+      });
+    }
+  } else if (timeFrame === 'month') {
+    // Generate monthly buckets for the past 6 months
+    const [year, month] = selectedPeriod.split('-');
+    const endDate = new Date(year, month - 1, 1);
+    
+    for (let i = 5; i >= 0; i--) {
+      const monthDate = new Date(endDate.getFullYear(), endDate.getMonth() - i, 1);
+      const nextMonth = new Date(monthDate);
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+      
+      buckets.push({
+        label: formatDateOnly(monthDate),
+        start: monthDate,
+        end: nextMonth
+      });
+    }
+  }
+  
+  return buckets;
 }
 
 function formatPeriodDisplay(period, timeFrame) {
@@ -1677,4 +1645,173 @@ function getDifficultyColor(level) {
     critical: 'bg-red-500'
   };
   return colors[level] || 'bg-gray-500';
+}
+
+// Trend Timeline Component
+function TrendTimeline({ timelineSeries, timeFrame }) {
+  if (!timelineSeries || timelineSeries.length === 0) {
+    return (
+      <div className="bg-white rounded-lg border p-6">
+        <h3 className="text-lg font-semibold mb-4">Usage Timeline</h3>
+        <div className="text-center text-gray-500 py-8">
+          No timeline data available
+        </div>
+      </div>
+    );
+  }
+
+  // Calculate max values for scaling
+  const maxTasks = Math.max(...timelineSeries.map(d => d.tasksCreated));
+  const maxCompletions = Math.max(...timelineSeries.map(d => d.tasksCompleted));
+  const maxPoints = Math.max(...timelineSeries.map(d => d.pointsEarned));
+  const maxValue = Math.max(maxTasks, maxCompletions, maxPoints, 1);
+
+  const chartHeight = 200;
+  const chartWidth = timelineSeries.length * 60;
+  const barWidth = 50;
+  const spacing = 10;
+
+  return (
+    <div className="bg-white rounded-lg border p-6">
+      <h3 className="text-lg font-semibold mb-4">Usage Timeline</h3>
+      <div className="overflow-x-auto">
+        <svg width={chartWidth} height={chartHeight + 60} className="mx-auto">
+          {/* Chart area */}
+          <rect x="0" y="0" width={chartWidth} height={chartHeight} fill="#f8fafc" />
+          
+          {/* Grid lines */}
+          {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => (
+            <line
+              key={i}
+              x1="0"
+              y1={chartHeight * ratio}
+              x2={chartWidth}
+              y2={chartHeight * ratio}
+              stroke="#e2e8f0"
+              strokeWidth="1"
+            />
+          ))}
+          
+          {/* Bars */}
+          {timelineSeries.map((data, index) => {
+            const x = index * (barWidth + spacing) + spacing;
+            const tasksHeight = (data.tasksCreated / maxValue) * chartHeight;
+            const completionsHeight = (data.tasksCompleted / maxValue) * chartHeight;
+            const pointsHeight = (data.pointsEarned / maxValue) * chartHeight;
+            
+            return (
+              <g key={index}>
+                {/* Tasks Created Bar */}
+                <rect
+                  x={x}
+                  y={chartHeight - tasksHeight}
+                  width={barWidth / 3}
+                  height={tasksHeight}
+                  fill="#3b82f6"
+                  opacity="0.8"
+                />
+                
+                {/* Tasks Completed Bar */}
+                <rect
+                  x={x + barWidth / 3}
+                  y={chartHeight - completionsHeight}
+                  width={barWidth / 3}
+                  height={completionsHeight}
+                  fill="#10b981"
+                  opacity="0.8"
+                />
+                
+                {/* Points Earned Bar */}
+                <rect
+                  x={x + (barWidth * 2) / 3}
+                  y={chartHeight - pointsHeight}
+                  width={barWidth / 3}
+                  height={pointsHeight}
+                  fill="#f59e0b"
+                  opacity="0.8"
+                />
+                
+                {/* Labels */}
+                <text
+                  x={x + barWidth / 2}
+                  y={chartHeight + 20}
+                  textAnchor="middle"
+                  fontSize="10"
+                  fill="#64748b"
+                  transform={`rotate(-45, ${x + barWidth / 2}, ${chartHeight + 20})`}
+                >
+                  {data.label.length > 8 ? data.label.substring(0, 8) + '...' : data.label}
+                </text>
+              </g>
+            );
+          })}
+          
+          {/* Value labels on bars */}
+          {timelineSeries.map((data, index) => {
+            const x = index * (barWidth + spacing) + spacing;
+            const tasksHeight = (data.tasksCreated / maxValue) * chartHeight;
+            const completionsHeight = (data.tasksCompleted / maxValue) * chartHeight;
+            const pointsHeight = (data.pointsEarned / maxValue) * chartHeight;
+            
+            return (
+              <g key={index}>
+                {data.tasksCreated > 0 && (
+                  <text
+                    x={x + barWidth / 6}
+                    y={chartHeight - tasksHeight - 5}
+                    textAnchor="middle"
+                    fontSize="8"
+                    fill="#1e40af"
+                    fontWeight="bold"
+                  >
+                    {data.tasksCreated}
+                  </text>
+                )}
+                {data.tasksCompleted > 0 && (
+                  <text
+                    x={x + barWidth / 2}
+                    y={chartHeight - completionsHeight - 5}
+                    textAnchor="middle"
+                    fontSize="8"
+                    fill="#047857"
+                    fontWeight="bold"
+                  >
+                    {data.tasksCompleted}
+                  </text>
+                )}
+                {data.pointsEarned > 0 && (
+                  <text
+                    x={x + (barWidth * 5) / 6}
+                    y={chartHeight - pointsHeight - 5}
+                    textAnchor="middle"
+                    fontSize="8"
+                    fill="#92400e"
+                    fontWeight="bold"
+                  >
+                    {data.pointsEarned}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+        
+        {/* Legend */}
+        <div className="flex justify-center gap-6 mt-4">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-blue-500 rounded"></div>
+            <span className="text-sm text-gray-600">Tasks Created</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-green-500 rounded"></div>
+            <span className="text-sm text-gray-600">Tasks Completed</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 bg-amber-500 rounded"></div>
+            <span className="text-sm text-gray-600">Points Earned</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -57,14 +57,23 @@ export default function TaskItem({ task, STATUSES, onStart, onFinish, onToggleEx
           </div>
           
           {/* Show first note below task title */}
-          {task.notes && task.notes.length > 0 && task.notes[0]?.text && (
+          {task.notes && Array.isArray(task.notes) && task.notes.length > 0 && task.notes[0]?.text && (
             <div className="text-sm text-slate-600 mt-1 line-clamp-1">
               {task.notes[0].text}
             </div>
           )}
           
           <div className="flex items-center gap-2 mt-1">
-            <span className={`badge ${task.status === STATUSES.COMPLETE ? 'badge-success' : task.status === STATUSES.ONGOING ? 'badge-info' : 'badge-warn'}`}>
+            <span 
+              className={`badge ${
+                task.status === STATUSES.COMPLETE ? 'badge-success' : 
+                task.status === STATUSES.ONGOING ? 'badge-info' : 
+                task.status === STATUSES.REJECTED ? 'badge-error' : 
+                task.status === STATUSES.DELETED ? 'badge-error' : 
+                'badge-warn'
+              }`}
+              title={task.status === STATUSES.DELETED && task.deleteReason ? `Deleted: ${task.deleteReason}` : ''}
+            >
               {task.status}
             </span>
             {difficultyConfig && (
@@ -80,6 +89,31 @@ export default function TaskItem({ task, STATUSES, onStart, onFinish, onToggleEx
                 🚨 URGENT
               </span>
             )}
+            {/* Show approval status badges */}
+            {task.needsApproval && !task.approvedBy && !task.rejectedBy && (
+              <span 
+                className="text-xs text-amber-600 font-medium"
+                title="This self-assigned task needs approval from a department head before it can be completed"
+              >
+                ⏳ Pending approval
+              </span>
+            )}
+            {task.approvedBy && (
+              <span 
+                className="text-xs text-green-600"
+                title={`Approved by ${task.approvedByName || 'Department Head'}`}
+              >
+                ✓
+              </span>
+            )}
+            {task.rejectedBy && (
+              <span 
+                className="text-xs text-red-600 font-medium"
+                title={`Rejected by ${task.rejectedByName || 'Department Head'}`}
+              >
+                ✗ Rejected
+              </span>
+            )}
             {hasBlockingRequests && (
               <span className="badge bg-red-100 text-red-800 border-2 border-red-300 font-semibold">
                 🔒 BLOCKED
@@ -90,13 +124,18 @@ export default function TaskItem({ task, STATUSES, onStart, onFinish, onToggleEx
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           {!isReadOnly && (
             <>
-              {task.status === STATUSES.PENDING && !hasBlockingRequests && (
+              {task.status === STATUSES.PENDING && !hasBlockingRequests && task.status !== STATUSES.REJECTED && (
                 <button onClick={onStart} className="btn btn-xs btn-primary">
                   {t('start')}
                 </button>
               )}
               {task.status === STATUSES.ONGOING && !hasBlockingRequests && (
-                <button onClick={onFinish} className="btn btn-xs btn-success">
+                <button 
+                  onClick={onFinish} 
+                  className={`btn btn-xs ${task.needsApproval && !task.approvedBy ? 'btn-disabled opacity-50 cursor-not-allowed' : 'btn-success'}`}
+                  disabled={task.needsApproval && !task.approvedBy}
+                  title={task.needsApproval && !task.approvedBy ? 'Task needs approval before completion' : ''}
+                >
                   {t('finish')}
                 </button>
               )}
@@ -104,6 +143,11 @@ export default function TaskItem({ task, STATUSES, onStart, onFinish, onToggleEx
                 <button onClick={onStart} className="btn btn-xs btn-secondary">
                   {t('reopen')}
                 </button>
+              )}
+              {task.status === STATUSES.REJECTED && (
+                <span className="text-xs text-red-600 font-medium px-2 py-1">
+                  {t('rejected', 'Rejected')}
+                </span>
               )}
             </>
           )}

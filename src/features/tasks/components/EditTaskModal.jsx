@@ -159,6 +159,26 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
       };
 
       await onSave(updatedTask);
+      
+      // If this is a Head/Admin/Management editing a task that needs approval,
+      // automatically approve it since they don't need approval themselves
+      if (task.needsApproval && !task.approvedBy && !task.rejectedBy) {
+        const isApprover = currentUser.role === 'Head' || currentUser.role === 'Management' || currentUser.role === 'Admin';
+        if (isApprover) {
+          // Auto-approve the task
+          const approvedTask = {
+            ...updatedTask,
+            needsApproval: false,
+            approvedBy: currentUser.id,
+            approvedByName: currentUser.name,
+            approvedAt: new Date().toISOString()
+          };
+          await onSave(approvedTask);
+        }
+      }
+      
+      // Close modal after successful save
+      onClose();
     } catch (error) {
       console.error('Error updating task:', error);
     } finally {
@@ -381,7 +401,7 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
               />
               
               {/* Show previous notes */}
-              {task.notes && task.notes.length > 0 && (
+              {task.notes && Array.isArray(task.notes) && task.notes.length > 0 && (
                 <div className="mt-2 p-2 bg-gray-50 rounded border">
                   <div className="text-xs text-gray-600 mb-1">Previous notes:</div>
                   {task.notes.map((note, index) => (

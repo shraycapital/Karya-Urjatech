@@ -80,12 +80,9 @@ export default function PWAAnalyticsDashboard({ users = [], departments = [], t 
           ? (selectedUser === 'all' ? null : [selectedUser])
           : filteredUsers.map(u => u.id);
 
-        console.log('Loading PWA analytics for range:', range, 'userIds:', userIds);
         const data = await pwaAnalytics.getAnalyticsData(range.start, range.end, userIds);
-        console.log('PWA analytics data loaded:', data);
         setAnalyticsData(data);
       } catch (err) {
-        console.error('Failed to load PWA analytics:', err);
         setError('Failed to load analytics data');
       } finally {
         setIsLoading(false);

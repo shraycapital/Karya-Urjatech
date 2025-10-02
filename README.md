@@ -1,3 +1,33 @@
+# 🔥 Karya App - Task Management System
+
+## ⚠️ CRITICAL: Firestore Timestamp Format
+
+**ALL DATES AND TIMES IN THIS APPLICATION USE FIRESTORE TIMESTAMP FORMAT**
+
+- **Format**: `{ seconds: number, nanoseconds: number }`
+- **Documentation**: See `FIRESTORE_TIMESTAMP_GUIDE.md` for complete details
+- **Examples**: All task creation dates, completion dates, activity logs use this format
+- **Parsing**: Use proper parsing methods, NOT `new Date(timestamp)`
+
+## 📚 Quick Reference
+
+```javascript
+// ❌ WRONG - Don't do this
+const date = new Date(task.createdAt);
+
+// ✅ CORRECT - Do this instead
+let date;
+if (task.createdAt?.seconds) {
+  date = new Date(task.createdAt.seconds * 1000 + (task.createdAt.nanoseconds || 0) / 1000000);
+} else if (task.createdAt?.toDate) {
+  date = task.createdAt.toDate();
+} else {
+  date = new Date(task.createdAt);
+}
+```
+
+---
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { formatDate } from '../../../shared/utils/date.js';
-import { getActivityLogsWithCursor, getActivityLogCount, getAllActionTypes } from '../../../shared/utils/activityLogApi.js';
+import { getActivityLogsWithCursor, getActivityLogCount } from '../../../shared/utils/activityLogApi.js';
 
 export default function ActivityLog({ onClose, t }) {
   const [activityLogFilter, setActivityLogFilter] = useState('all');
@@ -10,7 +10,6 @@ export default function ActivityLog({ onClose, t }) {
   const [hasMore, setHasMore] = useState(true);
   const [lastDoc, setLastDoc] = useState(null);
   const [totalCount, setTotalCount] = useState(0);
-  const [availableActions, setAvailableActions] = useState([]);
 
   // Load initial activity logs
   const loadActivityLogs = useCallback(async (filter = 'all', reset = true) => {
@@ -29,13 +28,8 @@ export default function ActivityLog({ onClose, t }) {
       const count = await getActivityLogCount(filter);
       setTotalCount(count);
       
-      // Get available action types for debugging
-      if (reset) {
-        const actions = await getAllActionTypes();
-        setAvailableActions(actions);
-      }
     } catch (error) {
-      console.error('Error loading activity logs:', error);
+      // Handle error silently
     } finally {
       setIsLoading(false);
     }
@@ -52,7 +46,7 @@ export default function ActivityLog({ onClose, t }) {
       setHasMore(result.hasMore);
       setLastDoc(result.lastDoc);
     } catch (error) {
-      console.error('Error loading more activity logs:', error);
+      // Handle error silently
     } finally {
       setIsLoadingMore(false);
     }
@@ -86,12 +80,6 @@ export default function ActivityLog({ onClose, t }) {
             </span>
           </div>
           
-          {/* Debug info */}
-          {availableActions.length > 0 && (
-            <div className="mb-2 p-2 bg-gray-100 rounded text-xs">
-              <strong>Available actions in database:</strong> {availableActions.join(', ')}
-            </div>
-          )}
           <select 
             value={activityLogFilter} 
             onChange={(e) => handleFilterChange(e.target.value)} 

@@ -26,7 +26,6 @@ const LocationsModal = ({ isOpen, onClose, currentUser, users, t }) => {
       const data = await getUserLocationData(selectedUserId, startDate, endDate);
       setLocationData(data);
     } catch (error) {
-      console.error('Error loading location data:', error);
       setLocationData([]);
     } finally {
       setIsLoading(false);
@@ -70,7 +69,6 @@ const LocationsModal = ({ isOpen, onClose, currentUser, users, t }) => {
           setSelectedUserId('');
         }
       } catch (error) {
-        console.error('Error loading users with location data:', error);
         setAvailableUsers([]);
         setSelectedUserId('');
       }

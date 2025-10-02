@@ -195,6 +195,46 @@ export default function DepartmentDashboard({ users, tasks, allUsers, department
               {tasks.filter(t => t.status === STATUSES.COMPLETE).length}
             </span>
           </button>
+
+          <button
+            onClick={() => setStatusFilter(prev => prev.includes(STATUSES.REJECTED) ? prev.filter(s => s !== STATUSES.REJECTED) : [...prev, STATUSES.REJECTED])}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200 ${
+              statusFilter.includes(STATUSES.REJECTED)
+                ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+            }`}
+          >
+            <span>Rejected</span>
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none transition-colors ${
+                statusFilter.includes(STATUSES.REJECTED)
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-100 text-slate-500'
+              }`}
+            >
+              {tasks.filter(t => t.status === STATUSES.REJECTED).length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setStatusFilter(prev => prev.includes(STATUSES.DELETED) ? prev.filter(s => s !== STATUSES.DELETED) : [...prev, STATUSES.DELETED])}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200 ${
+              statusFilter.includes(STATUSES.DELETED)
+                ? 'bg-gray-600 text-white border-gray-600 shadow-sm'
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
+            }`}
+          >
+            <span>Deleted</span>
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none transition-colors ${
+                statusFilter.includes(STATUSES.DELETED)
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-100 text-slate-500'
+              }`}
+            >
+              {tasks.filter(t => t.status === STATUSES.DELETED).length}
+            </span>
+          </button>
         </div>
       </div>
 

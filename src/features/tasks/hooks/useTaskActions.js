@@ -22,6 +22,22 @@ export default function useTaskActions({ tasks, onUpdateTask, onLogActivity, t, 
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
 
+    // Check if task needs approval first (for self-assigned tasks)
+    if (task.needsApproval && !task.approvedBy) {
+      const approvalMessage = t('taskNeedsApproval', 
+        'This self-assigned task requires approval from a department head before it can be completed. Please wait for approval.');
+      alert(approvalMessage);
+      return;
+    }
+    
+    // Check if task is rejected - cannot be completed
+    if (task.status === STATUSES.REJECTED) {
+      const rejectionMessage = t('taskRejected', 
+        'This task has been rejected and cannot be completed. Please edit or delete the task.');
+      alert(rejectionMessage);
+      return;
+    }
+
     // A material_request task cannot be blocked, so skip this check for it.
     if (task.type !== 'material_request') {
       // Check if this task has any blocking material requests that aren't completed
@@ -61,6 +77,23 @@ export default function useTaskActions({ tasks, onUpdateTask, onLogActivity, t, 
 
   const handleCycleStatus = useCallback((task) => {
     const newStatus = nextStatus(task.status);
+    
+    // Check if task needs approval before completing (for self-assigned tasks)
+    if (newStatus === STATUSES.COMPLETE && task.needsApproval && !task.approvedBy) {
+      const approvalMessage = t('taskNeedsApproval', 
+        'This self-assigned task requires approval from a department head before it can be completed. Please wait for approval.');
+      alert(approvalMessage);
+      return;
+    }
+    
+    // Check if task is rejected - cannot be completed
+    if (newStatus === STATUSES.COMPLETE && task.status === STATUSES.REJECTED) {
+      const rejectionMessage = t('taskRejected', 
+        'This task has been rejected and cannot be completed. Please edit or delete the task.');
+      alert(rejectionMessage);
+      return;
+    }
+    
     const patch = { id: task.id, status: newStatus };
 
     // Handle reopening completed tasks

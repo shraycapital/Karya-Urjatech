@@ -80,6 +80,7 @@ const useDebouncedAutoSave = (callback, delay = 1000) => {
 // ---------------------- Main App Component ----------------------
 function KaryaApp() {
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingError, setLoadingError] = useState(null);
   const [users, setUsers] = useState([]);
   const [departments, setDepartments] = useState([]);
 
@@ -139,7 +140,16 @@ function KaryaApp() {
   // Bootstrap: fetch initial snapshot (auth + dual collections) for first paint
   useEffect(() => {
     let unsubs = [];
+    let loadingTimeout;
+    
     async function bootstrap() {
+      // Add timeout to prevent infinite loading
+      loadingTimeout = setTimeout(() => {
+        console.warn('Bootstrap timeout - forcing loading to false');
+        setIsLoading(false);
+        setLoadingError('Loading timeout - please refresh the page');
+      }, 15000); // 15 second timeout
+      
       try {
         // Initialize PWA analytics with current user data
         const currentUserId = localStorage.getItem('kartavya_userId');
@@ -188,6 +198,11 @@ function KaryaApp() {
         const mergedDept = mergeById(deptA, deptB);
         setDepartments(mergedDept);
 
+        
+        // Clear timeout since we loaded successfully
+        if (loadingTimeout) {
+          clearTimeout(loadingTimeout);
+        }
         
         // Only set loading to false after users are loaded (critical for login)
         if (mergedUsers.length > 0) {
@@ -243,7 +258,11 @@ function KaryaApp() {
         unsubs = [unsub1, unsub2, unsub3, unsub4, unsub5];
       } catch (e) {
         console.error('Bootstrap error', e);
+        if (loadingTimeout) {
+          clearTimeout(loadingTimeout);
+        }
         setIsLoading(false);
+        setLoadingError(`Loading failed: ${e.message}`);
       }
     }
     bootstrap();
@@ -721,6 +740,17 @@ function KaryaApp() {
         <div className="text-center">
           <div className="w-8 h-8 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
           <p className="mt-2 text-sm text-slate-500">{t('loading')}</p>
+          {loadingError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-600">{loadingError}</p>
+              <button 
+                onClick={() => window.location.reload()} 
+                className="mt-2 px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
+              >
+                Refresh Page
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );

@@ -141,6 +141,7 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
         title: title.trim(),
         assignedUserIds,
         assignedById: currentUser.id,
+        assignedUserRole: currentUser.role, // Pass user role for approval logic
         departmentId: dept,
         difficulty,
         points: DIFFICULTY_CONFIG[difficulty].points,

@@ -254,7 +254,7 @@ export default function TaskList({
                     const d = toSafeDate(task.completedAt);
                     return d ? formatDateTime(d) : 'N/A';
                   })()}</div>
-                  {task.notes?.length > 0 && (
+                  {task.notes && Array.isArray(task.notes) && task.notes.length > 0 && (
                     <div>
                       <strong>{t('notes')}:</strong>
                       <ul className="list-disc list-inside pl-2 text-xs">
@@ -262,6 +262,12 @@ export default function TaskList({
                           <li key={i}>{n.text} ({n.type})</li>
                         ))}
                       </ul>
+                    </div>
+                  )}
+                  {task.status === STATUSES.DELETED && task.deleteReason && (
+                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded">
+                      <strong className="text-red-800 text-sm">🗑️ Deletion Reason:</strong>
+                      <p className="text-red-700 text-xs mt-1">{task.deleteReason}</p>
                     </div>
                   )}
                   {/* Progressive photo loading - only show when expanded and loaded */}
