@@ -136,6 +136,8 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   const [showDueSoonOnly, setShowDueSoonOnly] = useState(false);
   const [dismissedSignature, setDismissedSignature] = useState(null);
   const alertStorageKey = currentUser?.id ? `task_priority_nudge_${currentUser.id}` : null;
+  const [isTasksLoaded, setIsTasksLoaded] = useState(false);
+  const [localTaskUpdates, setLocalTaskUpdates] = useState({});
   
   // Edit task modal state
   const [editingTask, setEditingTask] = useState(null);
@@ -144,6 +146,21 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   // Allow user to edit daily target with a weekly lock (until next Monday)
   const [isEditingTarget, setIsEditingTarget] = useState(false);
   const [tempTarget, setTempTarget] = useState('');
+
+  // Progressive loading: Mark tasks as loaded when they arrive
+  useEffect(() => {
+    if (tasks.length > 0 && !isTasksLoaded) {
+      setIsTasksLoaded(true);
+    }
+  }, [tasks.length, isTasksLoaded]);
+
+  // Merge local task updates with the original tasks
+  const mergedTasks = useMemo(() => {
+    return tasks.map(task => ({
+      ...task,
+      ...localTaskUpdates[task.id]
+    }));
+  }, [tasks, localTaskUpdates]);
 
   
   useEffect(() => {
@@ -401,7 +418,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   
   const handleUpdateTask = async (patch) => {
     try {
-      const oldTask = tasks.find(t => t.id === patch.id);
+      const oldTask = mergedTasks.find(t => t.id === patch.id);
       await updateTask(patch.id, patch, currentUser.id);
       if (onTaskFeedback) {
         onTaskFeedback('Task updated successfully!', 'success');
@@ -420,10 +437,20 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
       }
     }
   };
+
+  // Function to update task locally without database update (for progressive loading)
+  const handleUpdateTaskLocal = (patch) => {
+    // For progressive loading, we'll store the update in local state
+    // This will be merged with the tasks when rendering
+    setLocalTaskUpdates(prev => ({
+      ...prev,
+      [patch.id]: { ...prev[patch.id], ...patch }
+    }));
+  };
   
   const handleDeleteTask = async (taskId, deleteReason = 'No reason provided') => {
     try {
-      const task = tasks.find(t => t.id === taskId);
+      const task = mergedTasks.find(t => t.id === taskId);
       await deleteTask(taskId, currentUser?.id || 'system', currentUser?.name || currentUser?.username || 'System', deleteReason);
       if (onTaskFeedback) {
         onTaskFeedback('Task deleted successfully!', 'success');
@@ -457,7 +484,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
 
   const handleAddComment = async (taskId, commentText) => {
     try {
-      const task = tasks.find(t => t.id === taskId);
+      const task = mergedTasks.find(t => t.id === taskId);
       if (!task) return;
 
       const newComment = {
@@ -465,7 +492,9 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
         text: commentText,
         userId: currentUser.id,
         userName: currentUser.name,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        editedBy: currentUser.id,
+        editedByName: currentUser.name
       };
 
       const updatedTask = {
@@ -494,14 +523,14 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   const handleDeleteComment = async (taskId, commentId) => {
     try {
       // Find the task
-      const task = tasks.find(t => t.id === taskId);
+      const task = mergedTasks.find(t => t.id === taskId);
       if (!task) {
         console.error('Task not found');
         return;
       }
 
       // Remove the comment from the task's comments array
-      const updatedComments = (task.comments || []).filter(comment => comment.id !== commentId);
+      const updatedComments = (task.comments || []).filter(comment => comment?.id !== commentId);
       
       // Update the task with the new comments array
       await handleUpdateTask(taskId, { comments: updatedComments });
@@ -516,7 +545,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   // Handle task approval (for self-assigned tasks)
   const handleApproveTask = async (taskId) => {
     try {
-      const task = tasks.find(t => t.id === taskId);
+      const task = mergedTasks.find(t => t.id === taskId);
       if (!task) {
         console.error('Task not found');
         return;
@@ -552,7 +581,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   // Handle rejecting a task
   const handleRejectTask = async (taskId) => {
     try {
-      const task = tasks.find(t => t.id === taskId);
+      const task = mergedTasks.find(t => t.id === taskId);
       if (!task) {
         console.error('Task not found');
         return;
@@ -612,7 +641,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
 
     // Log activity
     if (onLogActivity) {
-      const task = tasks.find(t => t.id === taskId);
+      const task = mergedTasks.find(t => t.id === taskId);
       if (task) {
         onLogActivity('dismiss_approval', 'task', taskId, task.title, currentUser.id, currentUser.name, {
           action: 'dismissed_approval_request'
@@ -638,7 +667,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
 
   
   // Improved task filtering logic
-  const myTasks = (tasks || []).filter((t) => {
+  const myTasks = (mergedTasks || []).filter((t) => {
     if (!t || !currentUser?.id) return false;
 
     // Hide deleted tasks from regular users (only admins can see them)
@@ -818,7 +847,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
       
       // Search in task notes
       if (task.notes && Array.isArray(task.notes)) {
-        const notesText = task.notes.map(note => note.text || '').join(' ').toLowerCase();
+        const notesText = task.notes.map(note => note?.text || '').join(' ').toLowerCase();
         if (notesText.includes(searchTerm)) return true;
       }
       
@@ -1196,21 +1225,46 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
 
           {/* Removed duplicate DailyPointsTarget for cleaner UI */}
 
-          {/* Task List with Filtered Tasks */}
-          <TaskList 
-            tasks={filteredTasks} 
-            allTasks={tasks}
-            onUpdateTask={handleUpdateTask} 
-            t={t} 
-            currentUser={currentUser} 
-            users={users} 
-            departments={departments} 
-            deleteTask={handleDeleteTask} 
-            onCreateRequest={handleCreateRequest}
-            onAddComment={handleAddComment}
-            onDeleteComment={handleDeleteComment}
-            openTaskId={openTaskId}
-          />
+          {/* Task List with Progressive Loading */}
+          {!isTasksLoaded ? (
+            <div className="space-y-3">
+              {[1, 2, 3, 4].map(i => (
+                <div key={i} className="bg-white rounded-lg p-4 border border-slate-200 animate-pulse">
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="w-3/4 h-5 bg-slate-200 rounded"></div>
+                    <div className="w-16 h-4 bg-slate-200 rounded"></div>
+                  </div>
+                  <div className="w-full h-4 bg-slate-200 rounded mb-2"></div>
+                  <div className="w-2/3 h-4 bg-slate-200 rounded mb-3"></div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-20 h-6 bg-slate-200 rounded-full"></div>
+                    <div className="w-16 h-6 bg-slate-200 rounded-full"></div>
+                  </div>
+                </div>
+              ))}
+              <div className="text-center py-4">
+                <div className="w-4 h-4 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                <p className="text-sm text-slate-500">Loading tasks...</p>
+              </div>
+            </div>
+          ) : (
+            <TaskList 
+              tasks={filteredTasks} 
+              allTasks={mergedTasks}
+              onUpdateTask={handleUpdateTask} 
+              onUpdateTaskLocal={handleUpdateTaskLocal}
+              t={t} 
+              currentUser={currentUser} 
+              users={users} 
+              departments={departments} 
+              deleteTask={handleDeleteTask} 
+              onCreateRequest={handleCreateRequest}
+              onAddComment={handleAddComment}
+              onDeleteComment={handleDeleteComment}
+              openTaskId={openTaskId}
+            />
+          )}
+
         </Section>
       
         <Section title={t('createTask')}>

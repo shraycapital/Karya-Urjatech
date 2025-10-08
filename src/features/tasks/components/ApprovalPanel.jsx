@@ -92,8 +92,8 @@ export default function ApprovalPanel({
 
   // Get the next task to approve (oldest first)
   const nextTask = tasksNeedingApproval.sort((a, b) => {
-    const aTime = a.createdAt?.toDate?.() || new Date(a.createdAt);
-    const bTime = b.createdAt?.toDate?.() || new Date(b.createdAt);
+    const aTime = a.createdAt?.toDate?.() || (a.createdAt ? new Date(a.createdAt) : new Date(0));
+    const bTime = b.createdAt?.toDate?.() || (b.createdAt ? new Date(b.createdAt) : new Date(0));
     return aTime - bTime;
   })[0];
 

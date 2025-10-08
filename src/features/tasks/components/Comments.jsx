@@ -17,7 +17,7 @@ export default function Comments({ comments = [], t }) {
       
       <div className="space-y-3">
         {comments.map((comment) => (
-          <div key={comment.id} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+          <div key={comment?.id || Math.random()} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
             <div className="flex items-start justify-between mb-2">
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 bg-brand-100 rounded-full flex items-center justify-center">
@@ -30,11 +30,11 @@ export default function Comments({ comments = [], t }) {
                 </span>
               </div>
               <span className="text-xs text-gray-500">
-                {new Date(comment.createdAt).toLocaleDateString()} {new Date(comment.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                {comment.createdAt ? `${new Date(comment.createdAt).toLocaleDateString()} ${new Date(comment.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Unknown date'}
               </span>
             </div>
             <p className="text-sm text-gray-700 whitespace-pre-wrap">
-              {comment.text}
+              {comment?.text || 'No text available'}
             </p>
           </div>
         ))}

@@ -5,13 +5,17 @@ const QUICK_RANGES = [
   { value: '3', label: 'Last 3 days' },
   { value: '7', label: 'Last 7 days' },
   { value: '30', label: 'Last 30 days' },
+  { value: 'all', label: 'All records' }
 ];
 
 let googleMapsLoaderPromise = null;
 
 const loadGoogleMaps = () => {
   if (typeof window === 'undefined') return Promise.resolve();
-  if (window.google && window.google.maps) return Promise.resolve();
+  if (window.google && window.google.maps) {
+    console.log('Google Maps API already available');
+    return Promise.resolve(window.google);
+  }
   if (googleMapsLoaderPromise) return googleMapsLoaderPromise;
 
   const runtimeKey =
@@ -21,26 +25,94 @@ const loadGoogleMaps = () => {
     (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GOOGLE_MAPS_API_KEY) ||
     (typeof process !== 'undefined' && process.env.REACT_APP_GOOGLE_MAPS_API_KEY);
 
+  console.log('Google Maps API Key:', apiKey ? 'Found' : 'Missing');
+  console.log('Runtime Key:', runtimeKey ? 'Found' : 'Missing');
+
   if (!apiKey) {
     return Promise.reject(new Error('GOOGLE_MAPS_API_KEY missing'));
   }
 
   googleMapsLoaderPromise = new Promise((resolve, reject) => {
-    const existingScript = document.getElementById('google-maps-script');
-    if (existingScript) {
-      existingScript.addEventListener('load', () => resolve(window.google), { once: true });
-      existingScript.addEventListener('error', reject, { once: true });
+    // Check if Google Maps is already loaded (from HTML script tag)
+    if (window.google && window.google.maps) {
+      console.log('Google Maps API already loaded from HTML');
+      resolve(window.google);
       return;
     }
 
+    // Wait for Google Maps to load (from HTML script tag)
+    const checkGoogleMaps = () => {
+      if (window.google && window.google.maps) {
+        console.log('Google Maps API loaded from HTML script');
+        resolve(window.google);
+        return true;
+      }
+      return false;
+    };
+
+    // Check immediately
+    if (checkGoogleMaps()) return;
+
+    // Check periodically for up to 10 seconds
+    let attempts = 0;
+    const maxAttempts = 50; // 10 seconds with 200ms intervals
+    const interval = setInterval(() => {
+      attempts++;
+      if (checkGoogleMaps()) {
+        clearInterval(interval);
+        return;
+      }
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        console.error('Google Maps API failed to load within timeout');
+        reject(new Error('Google Maps API failed to load within timeout'));
+      }
+    }, 200);
+
+    const existingScript = document.getElementById('google-maps-script');
+    if (existingScript) {
+      console.log('Existing Google Maps script found, waiting for load...');
+      existingScript.addEventListener('load', () => {
+        console.log('Google Maps script loaded, checking window.google...');
+        clearInterval(interval);
+        if (window.google && window.google.maps) {
+          console.log('Google Maps API is available');
+          resolve(window.google);
+        } else {
+          console.error('Google Maps API not available after script load');
+          reject(new Error('Google Maps API not available'));
+        }
+      }, { once: true });
+      existingScript.addEventListener('error', (error) => {
+        console.error('Google Maps script load error:', error);
+        clearInterval(interval);
+        reject(error);
+      }, { once: true });
+      return;
+    }
+
+    console.log('Creating new Google Maps script...');
     const script = document.createElement('script');
     script.id = 'google-maps-script';
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry&loading=async`;
     script.async = true;
     script.defer = true;
-    script.onload = () => resolve(window.google);
-    script.onerror = reject;
+    script.onload = () => {
+      console.log('Google Maps script loaded, checking window.google...');
+      if (window.google && window.google.maps) {
+        console.log('Google Maps API is available');
+        resolve(window.google);
+      } else {
+        console.error('Google Maps API not available after script load');
+        reject(new Error('Google Maps API not available'));
+      }
+    };
+    script.onerror = (error) => {
+      console.error('Google Maps script load error:', error);
+      reject(error);
+    };
     document.head.appendChild(script);
+    console.log('Google Maps script added to document head');
   });
 
   return googleMapsLoaderPromise;
@@ -115,6 +187,26 @@ const LocationHistoryView = ({
     }
   }, [processedRecords]);
 
+  useEffect(() => {
+    const mapElement = document.getElementById(mapId);
+    if (!mapElement || !mapRef.current) return;
+
+    if (!selectedEntryId) {
+      markerMetaRef.current.forEach(({ infoWindow }) => infoWindow?.close());
+      return;
+    }
+
+    const meta = markerMetaRef.current.find((item) => item.id === selectedEntryId);
+    if (!meta) return;
+
+    markerMetaRef.current.forEach(({ infoWindow }) => infoWindow?.close());
+    mapRef.current.panTo(meta.marker.getPosition());
+    if (mapRef.current.getZoom() < 12) {
+      mapRef.current.setZoom(12);
+    }
+    meta.infoWindow?.open(mapRef.current, meta.marker);
+  }, [selectedEntryId, mapId]);
+
   const groupedByDate = useMemo(() => {
     const buckets = new Map();
     processedRecords.forEach((record) => {
@@ -177,51 +269,70 @@ const LocationHistoryView = ({
     return depts.sort();
   }, [availableUsers]);
 
-  const departmentStats = useMemo(() => {
-    const stats = {};
-    availableUsers.forEach(user => {
-      const dept = user.department || 'Unknown';
-      if (!stats[dept]) {
-        stats[dept] = { users: 0, totalLocations: 0, activeDays: 0 };
-      }
-      stats[dept].users += 1;
-      const userStat = userStats[user.id] || { totalLocations: 0, activeDays: 0 };
-      stats[dept].totalLocations += userStat.totalLocations;
-      stats[dept].activeDays += userStat.activeDays;
-    });
-    return stats;
-  }, [availableUsers, userStats]);
 
   useEffect(() => {
-    if (!processedRecords.length) {
-      markerMetaRef.current.forEach(({ marker, infoWindow }) => {
-        infoWindow.close();
-        marker.setMap(null);
-      });
-      markerMetaRef.current = [];
-      if (mapRef.current) {
-        mapRef.current = null;
-      }
-      return;
+    const mapElement = document.getElementById(mapId);
+    if (!mapElement) {
+      return; // No map element available (component not mounted yet)
     }
 
-    const renderMarkers = (google) => {
-      const mapElement = document.getElementById(mapId);
-      if (!mapElement) return;
+    const defaultCenter = processedRecords[0]?.location
+      ? { lat: processedRecords[0].location.latitude, lng: processedRecords[0].location.longitude }
+      : { lat: 20.5937, lng: 78.9629 }; // Fallback to India center
 
+    const ensureMap = (google) => {
+      console.log('ensureMap called with:', google);
+      console.log('mapRef.current:', mapRef.current);
+      console.log('mapElement:', mapElement);
+      
       if (!mapRef.current) {
-        mapRef.current = new google.maps.Map(mapElement, {
-          zoom: 12,
-          center: { lat: processedRecords[0].location.latitude, lng: processedRecords[0].location.longitude },
-          mapTypeId: 'roadmap',
-        });
+        console.log('Creating new Google Map with center:', defaultCenter);
+        try {
+          mapRef.current = new google.maps.Map(mapElement, {
+            zoom: processedRecords.length ? 12 : 5,
+            center: defaultCenter,
+            mapTypeId: 'roadmap',
+          });
+          console.log('Google Map created successfully:', mapRef.current);
+        } catch (error) {
+          console.error('Error creating Google Map:', error);
+          throw error;
+        }
+      } else {
+        console.log('Google Map already exists');
       }
+    };
 
+    const clearExistingMarkers = () => {
       markerMetaRef.current.forEach(({ marker, infoWindow }) => {
-        infoWindow.close();
+        infoWindow?.close();
         marker.setMap(null);
       });
       markerMetaRef.current = [];
+    };
+
+    const renderMarkers = (google) => {
+      console.log('renderMarkers called with:', google);
+      console.log('processedRecords length:', processedRecords.length);
+      console.log('mapElement:', document.getElementById(mapId));
+      
+      ensureMap(google);
+      clearExistingMarkers();
+      
+      // Remove loading state
+      const mapElement = document.getElementById(mapId);
+      if (mapElement) {
+        console.log('Clearing map element innerHTML');
+        mapElement.innerHTML = '';
+      }
+
+      if (!processedRecords.length) {
+        console.log('No processed records, setting default center');
+        if (mapRef.current) {
+          mapRef.current.setCenter(defaultCenter);
+        }
+        return;
+      }
 
       const bounds = new google.maps.LatLngBounds();
 
@@ -233,24 +344,29 @@ const LocationHistoryView = ({
           position,
           map: mapRef.current,
           label: `${index + 1}`,
-          title: `${record.action} � ${record.occurredAt.toLocaleString()}`,
+          title: `${record.action} • ${record.occurredAt.toLocaleString()}`,
         });
 
-        const infoWindow = new google.maps.InfoWindow({
-          content: `
-            <div style="padding: 10px; max-width: 300px;">
-              <h3 style="margin: 0 0 8px 0; color: #1f2937;">${record.action}</h3>
-              <p style="margin: 4px 0; color: #4b5563;"><strong>Time:</strong> ${record.occurredAt.toLocaleString()}</p>
-              <p style="margin: 4px 0; color: #4b5563;"><strong>Element:</strong> ${record.elementId || 'unknown'}</p>
-              ${record.details?.elementText ? `<p style="margin: 4px 0; color: #4b5563;"><strong>Details:</strong> ${record.details.elementText}</p>` : ''}
-              <p style="margin: 4px 0; color: #4b5563;"><strong>Coordinates:</strong> ${record.location.latitude.toFixed(6)}, ${record.location.longitude.toFixed(6)}</p>
-              ${record.location.accuracy ? `<p style=\"margin: 4px 0; color: #4b5563;\"><strong>Accuracy:</strong> ${Math.round(record.location.accuracy)}m</p>` : ''}
-            </div>
-          `,
-        });
+        let infoWindow = null;
+        if (record.details?.elementText || record.location.accuracy) {
+          infoWindow = new google.maps.InfoWindow({
+            content: `
+              <div style="padding: 10px; max-width: 300px;">
+                <h3 style="margin: 0 0 8px 0; color: #1f2937;">${record.action}</h3>
+                <p style="margin: 4px 0; color: #4b5563;"><strong>Time:</strong> ${record.occurredAt.toLocaleString()}</p>
+                <p style="margin: 4px 0; color: #4b5563;"><strong>Element:</strong> ${record.elementId || 'unknown'}</p>
+                ${record.details?.elementText ? `<p style="margin: 4px 0; color: #4b5563;"><strong>Details:</strong> ${record.details.elementText}</p>` : ''}
+                <p style="margin: 4px 0; color: #4b5563;"><strong>Coordinates:</strong> ${record.location.latitude.toFixed(6)}, ${record.location.longitude.toFixed(6)}</p>
+                ${record.location.accuracy ? `<p style=\"margin: 4px 0; color: #4b5563;\"><strong>Accuracy:</strong> ${Math.round(record.location.accuracy)}m</p>` : ''}
+              </div>
+            `,
+          });
+        }
 
         marker.addListener('click', () => {
           setSelectedEntryId(record.id);
+          markerMetaRef.current.forEach(({ infoWindow: existingInfoWindow }) => existingInfoWindow?.close());
+          infoWindow?.open(mapRef.current, marker);
         });
 
         markerMetaRef.current.push({ id: record.id, marker, infoWindow });
@@ -258,16 +374,49 @@ const LocationHistoryView = ({
 
       if (!bounds.isEmpty()) {
         mapRef.current.fitBounds(bounds);
+      } else {
+        mapRef.current.setCenter(defaultCenter);
       }
     };
 
     loadGoogleMaps()
       .then((google) => {
+        console.log('Google Maps loaded successfully:', google);
+        console.log('Available Google Maps objects:', Object.keys(google.maps || {}));
         renderMarkers(google);
       })
       .catch((error) => {
-        // Handle Google Maps initialization error silently
+        console.error('Google Maps failed to load:', error);
+        console.error('Error details:', {
+          message: error.message,
+          stack: error.stack,
+          name: error.name
+        });
+        // Show error message in the map container
+        const mapElement = document.getElementById(mapId);
+        if (mapElement) {
+          mapElement.innerHTML = `
+            <div class="flex flex-col items-center justify-center h-full bg-gray-100 rounded-lg border-2 border-dashed border-gray-300 p-8">
+              <div class="text-center">
+                <div class="text-4xl mb-4">🗺️</div>
+                <h3 class="text-lg font-semibold text-gray-700 mb-2">Google Maps Not Available</h3>
+                <p class="text-sm text-gray-600 mb-4">Google Maps API key is not configured or there's a connection issue.</p>
+                <div class="text-xs text-gray-500 bg-gray-50 p-3 rounded border">
+                  <strong>Error:</strong> ${error.message || 'Unknown error'}
+                </div>
+                <div class="text-xs text-blue-600 bg-blue-50 p-3 rounded border mt-2">
+                  <strong>Tip:</strong> If you're using an ad blocker, try disabling it for this site or use incognito mode.
+                </div>
+                <p class="text-xs text-gray-500 mt-2">Location data is still available in the list view below.</p>
+              </div>
+            </div>
+          `;
+        }
       });
+
+    return () => {
+      clearExistingMarkers();
+    };
   }, [processedRecords, mapId]);
 
   useEffect(() => {
@@ -275,7 +424,7 @@ const LocationHistoryView = ({
     const meta = markerMetaRef.current.find((item) => item.id === selectedEntryId);
     if (!meta) return;
 
-    markerMetaRef.current.forEach(({ infoWindow }) => infoWindow.close());
+    markerMetaRef.current.forEach(({ infoWindow }) => infoWindow?.close());
     meta.infoWindow.open(mapRef.current, meta.marker);
     mapRef.current.panTo(meta.marker.getPosition());
     if (mapRef.current.getZoom() < 14) {
@@ -413,6 +562,7 @@ const LocationHistoryView = ({
               <option value="7">{t('last7Days') || 'Last 7 days'}</option>
               <option value="14">{t('last14Days') || 'Last 14 days'}</option>
               <option value="30">{t('last30Days') || 'Last 30 days'}</option>
+              <option value="all">{t('allRecords') || 'All records'}</option>
             </select>
             <button
               type="button"
@@ -464,37 +614,6 @@ const LocationHistoryView = ({
           </div>
         </div>
 
-        {Object.keys(departmentStats).length > 1 && (
-          <div className="rounded-lg border border-slate-200 bg-white">
-            <div className="border-b border-slate-200 px-4 py-3">
-              <h3 className="text-sm font-semibold text-slate-700">
-                {t('departmentSummary') || 'Department Summary'}
-              </h3>
-            </div>
-            <div className="divide-y divide-slate-100">
-              {Object.entries(departmentStats)
-                .sort(([,a], [,b]) => b.totalLocations - a.totalLocations)
-                .map(([dept, stats]) => (
-                  <div key={dept} className="px-4 py-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h4 className="text-sm font-medium text-slate-700">{dept}</h4>
-                        <p className="text-xs text-slate-500">
-                          {stats.users} {stats.users === 1 ? (t('user') || 'user') : (t('users') || 'users')}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-semibold text-slate-700">{stats.totalLocations}</p>
-                        <p className="text-xs text-slate-500">
-                          {stats.activeDays} {t('activeDays') || 'active days'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        )}
 
         <div className="rounded-lg border border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-4 py-3">
@@ -576,9 +695,17 @@ const LocationHistoryView = ({
             </h3>
           </div>
           <div className={`relative ${mapHeightClass}`}>
-            <div id={mapId} className="absolute inset-0 rounded-b-lg" />
+            <div id={mapId} className="absolute inset-0 rounded-b-lg">
+              {/* Loading state for map */}
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-50 rounded-lg">
+                <div className="text-center">
+                  <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                  <p className="text-sm text-gray-600">Loading Google Maps...</p>
+                </div>
+              </div>
+            </div>
             {processedRecords.length === 0 && (
-              <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500 bg-white bg-opacity-90">
                 {t('noLocationData') || 'No location data to display'}
               </div>
             )}

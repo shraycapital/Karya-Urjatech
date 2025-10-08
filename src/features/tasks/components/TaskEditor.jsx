@@ -1,7 +1,7 @@
 import React from 'react';
 import AdminComments from './AdminComments.jsx';
 
-export default function TaskEditor({ children, task, onRequestMaterial, hasBlockingTasks, blockingTasks, onAddComment, comments = [], t, currentUser, onDeleteComment }) {
+export default function TaskEditor({ children, task, onRequestMaterial, hasBlockingTasks, blockingTasks, onAddComment, comments = [], t, currentUser, onDeleteComment, isLoadingComments = false }) {
   return (
     <div className="border-t p-3 text-sm space-y-3">
       {/* Blocking Tasks Warning */}
@@ -22,7 +22,7 @@ export default function TaskEditor({ children, task, onRequestMaterial, hasBlock
                     ).join(', ') || 'Unknown'}
                   </div>
                   <div className="text-xs text-slate-500 mt-1">
-                    {t('created') || 'Created'}: {new Date(blockingTask.createdAt || blockingTask.timestamp).toLocaleDateString()}
+                    {t('created') || 'Created'}: {blockingTask.createdAt || blockingTask.timestamp ? new Date(blockingTask.createdAt || blockingTask.timestamp).toLocaleDateString() : 'Unknown date'}
                   </div>
                 </div>
                 <span className={`badge ${
@@ -64,7 +64,7 @@ export default function TaskEditor({ children, task, onRequestMaterial, hasBlock
       {children}
 
       {/* Comments Section - Moved to bottom */}
-      {comments.length > 0 && (
+      {(comments.length > 0 || isLoadingComments) && (
         <div className="border-t pt-3">
           <AdminComments 
             comments={comments} 
@@ -72,6 +72,7 @@ export default function TaskEditor({ children, task, onRequestMaterial, hasBlock
             currentUser={currentUser}
             onDeleteComment={onDeleteComment}
             taskId={task?.id}
+            isLoadingComments={isLoadingComments}
           />
         </div>
       )}

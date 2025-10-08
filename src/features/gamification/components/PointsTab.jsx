@@ -2,10 +2,11 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { STATUSES, DIFFICULTY_CONFIG, ROLES } from '../../../shared/constants';
 import Section from '../../../shared/components/Section';
 import { getBonusClaimsInRange, getBonusPointsInRange, getPointsFromEntry, getTotalBonusPoints } from '../../../shared/utils/dailyBonus.js';
+import { calculateTotalLeadershipPoints, calculateTCS, getLPBreakdownDisplay } from '../../../shared/utils/leadershipPoints.js';
 
 
 function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
-  const [leaderboardView, setLeaderboardView] = useState('topPerformers'); // Default to top performers view
+  const [leaderboardView, setLeaderboardView] = useState('overall'); // Default to TCS Overall view
 
   // Safety checks
   if (!currentUser || !tasks || !users) {
@@ -83,12 +84,18 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       basePoints = task.points;
     }
     
+    // R&D/New Skill tasks get 5x base points
+    const isRdNewSkill = task.isRdNewSkill || false;
+    if (isRdNewSkill) {
+      basePoints = basePoints * 5;
+    }
+    
     // Split points among assigned users
     const basePointsPerUser = Math.round(basePoints / assignedUserCount);
     
-    // Add bonuses
-    const collaborationBonus = assignedUserCount > 1 ? Math.round(basePointsPerUser * 0.1) : 0;
-    const urgentBonus = task.isUrgent ? Math.round(basePointsPerUser * 0.25) : 0;
+    // Add bonuses (only for regular tasks, not R&D)
+    const collaborationBonus = !isRdNewSkill && assignedUserCount > 1 ? Math.round(basePointsPerUser * 0.1) : 0;
+    const urgentBonus = !isRdNewSkill && task.isUrgent ? Math.round(basePointsPerUser * 0.25) : 0;
     
     return basePointsPerUser + collaborationBonus + urgentBonus;
   };
@@ -109,9 +116,20 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   const currentUserBonusLedger = currentUser?.dailyBonusLedger || {};
   const totalBonusPoints = getTotalBonusPoints(currentUserBonusLedger);
 
-  const userTotalPoints = userCompletedTasks.reduce((total, task) => {
+  // Calculate Execution Points (EP) - points from completing tasks
+  const userExecutionPoints = userCompletedTasks.reduce((total, task) => {
     return total + calculateTaskPoints(task);
-  }, 0) + totalBonusPoints;
+  }, 0);
+
+  // Calculate Leadership Points (LP) - points from tasks assigned by user
+  const userLeadershipData = useMemo(() => {
+    return calculateTotalLeadershipPoints(tasks, currentUser.id, calculateTaskPoints);
+  }, [tasks, currentUser.id]);
+
+  const userLeadershipPoints = userLeadershipData.total;
+
+  // Calculate Total Contribution Score (TCS) = EP + LP + Bonuses
+  const userTotalPoints = calculateTCS(userExecutionPoints, userLeadershipPoints, totalBonusPoints, 0);
 
   const dailyPointsTarget = currentUser?.dailyPointsTarget || 350;
 
@@ -347,8 +365,17 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       });
 
       const userBonusLedger = user?.dailyBonusLedger || {};
-      const totalTaskPoints = userTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+      
+      // Calculate Execution Points (EP)
+      const executionPoints = userTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
       const totalBonus = getTotalBonusPoints(userBonusLedger);
+      
+      // Calculate Leadership Points (LP)
+      const leadershipData = calculateTotalLeadershipPoints(tasks, user.id, calculateTaskPoints);
+      const leadershipPoints = leadershipData.total;
+      
+      // Calculate Total Contribution Score (TCS)
+      const tcs = calculateTCS(executionPoints, leadershipPoints, totalBonus, 0);
 
       const weeklyTasks = userTasks.filter(task => {
         const completionDate = getTaskCompletionDate(task);
@@ -367,21 +394,46 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       return {
         id: user.id,
         name: user.name || 'Unknown',
-        totalPoints: totalTaskPoints + totalBonus,
+        executionPoints,
+        leadershipPoints,
+        bonusPoints: totalBonus,
+        tcs,
+        totalPoints: tcs, // Use TCS as total points for backward compatibility
         weekPoints: weekTaskPoints + weekBonusPoints,
         monthPoints: monthTaskPoints + monthBonusPoints,
         completedTasks: userTasks.length,
         weeklyTasks: weeklyTasks.length,
         departmentId: user.departmentIds?.[0] || null,
       };
-    }).sort((a, b) => b.weekPoints - a.weekPoints);
-  }, [users, tasks]);
+    }).sort((a, b) => {
+      // Sort based on current leaderboard view
+      if (leaderboardView === 'topPerformers') {
+        return b.executionPoints - a.executionPoints;
+      } else if (leaderboardView === 'topLeaders') {
+        return b.leadershipPoints - a.leadershipPoints;
+      } else {
+        return b.tcs - a.tcs;
+      }
+    });
+  }, [users, tasks, leaderboardView]);
 
   // Get top 10 performers, include those with 0 points
   const topPerformers = userRankings.slice(0, 10);
 
-  // Calculate user's rank
-  const currentUserRank = userRankings.findIndex(user => user.id === currentUser.id) + 1;
+  // Calculate user's rank based on current view
+  const currentUserRank = useMemo(() => {
+    // Create a sorted array based on the current leaderboard view
+    const sortedRankings = [...userRankings].sort((a, b) => {
+      if (leaderboardView === 'topPerformers') {
+        return b.executionPoints - a.executionPoints;
+      } else if (leaderboardView === 'topLeaders') {
+        return b.leadershipPoints - a.leadershipPoints;
+      } else {
+        return b.tcs - a.tcs;
+      }
+    });
+    return sortedRankings.findIndex(user => user.id === currentUser.id) + 1;
+  }, [userRankings, currentUser.id, leaderboardView]);
 
   // Calculate department rankings (rebuild from tasks to ensure coverage across all depts)
   const departmentRankings = useMemo(() => {
@@ -536,6 +588,40 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
           </div>
         </div>
 
+        {/* Total Points Card with Breakdown */}
+        <div className="mb-4 p-4 bg-gradient-to-br from-brand-50 to-brand-100 rounded-lg border border-brand-200">
+          <div className="text-center mb-3">
+            <div className="text-3xl font-bold text-brand-900">{userTotalPoints}</div>
+            <div className="text-sm text-brand-700 font-medium">Total Contribution Score (TCS)</div>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="p-2 bg-white rounded-md">
+              <div className="flex items-center justify-center gap-1 text-blue-600 text-xs font-medium mb-1">
+                <span>⚡</span>
+                <span>EP</span>
+              </div>
+              <div className="text-lg font-bold text-slate-800">{userExecutionPoints}</div>
+              <div className="text-xs text-slate-500">Execution</div>
+            </div>
+            <div className="p-2 bg-white rounded-md">
+              <div className="flex items-center justify-center gap-1 text-purple-600 text-xs font-medium mb-1">
+                <span>🎯</span>
+                <span>LP</span>
+              </div>
+              <div className="text-lg font-bold text-slate-800">{userLeadershipPoints}</div>
+              <div className="text-xs text-slate-500">Leadership</div>
+            </div>
+            <div className="p-2 bg-white rounded-md">
+              <div className="flex items-center justify-center gap-1 text-green-600 text-xs font-medium mb-1">
+                <span>🎁</span>
+                <span>Bonus</span>
+              </div>
+              <div className="text-lg font-bold text-slate-800">{totalBonusPoints}</div>
+              <div className="text-xs text-slate-500">Rewards</div>
+            </div>
+          </div>
+        </div>
+
         {/* Quick summary cards */}
         <div className="grid grid-cols-2 gap-3 mb-4">
           <div className="text-center p-3 bg-slate-50 rounded-lg">
@@ -543,8 +629,8 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
             <div className="text-xs text-slate-600">Tasks completed today</div>
           </div>
           <div className="text-center p-3 bg-slate-50 rounded-lg">
-            <div className="text-xl font-bold text-slate-700">{userTotalPoints}</div>
-            <div className="text-xs text-slate-600">Total points</div>
+            <div className="text-xl font-bold text-slate-700">{userLeadershipData.tasksAwarded}</div>
+            <div className="text-xs text-slate-600">Tasks assigned (completed)</div>
           </div>
           <div className="text-center p-3 bg-slate-50 rounded-lg">
             <div className="text-xl font-bold text-slate-700">{weeklyStats.points}</div>
@@ -581,45 +667,179 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
       <Section title={t('leaderboard')}>
         <div className="text-center text-lg mb-4">
-          {t('yourRank')}: <span className="font-bold text-brand-600">#{currentUserRank}</span>
+          Your Rank: <span className="font-bold text-brand-600">#{currentUserRank}</span>
         </div>
         <div className="text-center text-sm text-slate-500 mb-6">
-          {currentUserRank === 1 ? '🏆 You are the leader!' : 'Keep going! You are doing great!'}
+          {currentUserRank === 1 
+            ? leaderboardView === 'topPerformers' ? '⚡ Top EP Performer!' 
+              : leaderboardView === 'topLeaders' ? '🎯 Top LP Leader!' 
+              : '🏆 You are the leader!' 
+            : 'Keep going! You are doing great!'}
         </div>
         
         {/* View Switcher */}
-        <div className="flex justify-center mb-6">
-          <div className="bg-slate-100 rounded-lg p-1 flex">
+        <div className="flex flex-col gap-3 mb-6">
+          {/* Points Type Toggle */}
+          <div className="flex justify-center">
+            <div className="bg-slate-100 rounded-lg p-1 flex flex-wrap gap-1">
             <button
               onClick={() => setLeaderboardView('topPerformers')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                className={`px-3 py-2 rounded-md text-xs font-medium transition-colors ${
                 leaderboardView === 'topPerformers'
-                  ? 'bg-white text-slate-900 shadow-sm'
+                    ? 'bg-blue-500 text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                ⚡ EP Leaders
+              </button>
+              <button
+                onClick={() => setLeaderboardView('topLeaders')}
+                className={`px-3 py-2 rounded-md text-xs font-medium transition-colors ${
+                  leaderboardView === 'topLeaders'
+                    ? 'bg-purple-500 text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                🎯 LP Leaders
+              </button>
+              <button
+                onClick={() => setLeaderboardView('overall')}
+                className={`px-3 py-2 rounded-md text-xs font-medium transition-colors ${
+                  leaderboardView === 'overall'
+                    ? 'bg-brand-500 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              🏆 {t('topPerformers')}
+                🏆 TCS Overall
             </button>
             <button
               onClick={() => setLeaderboardView('departments')}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                className={`px-3 py-2 rounded-md text-xs font-medium transition-colors ${
                 leaderboardView === 'departments'
-                  ? 'bg-white text-slate-900 shadow-sm'
+                    ? 'bg-green-500 text-white shadow-sm'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              🏢 {t('departments')}
+                🏢 Departments
             </button>
+            </div>
           </div>
         </div>
         
-        {/* Top Performers View */}
+        {/* Top Performers View (EP) */}
         {leaderboardView === 'topPerformers' && (
           <div>
             <div className="flex items-center justify-between mb-3">
-              <h4 className="font-medium text-slate-700">Top Performers</h4>
+              <h4 className="font-medium text-slate-700">⚡ Top Execution Points (EP)</h4>
               <div className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
-                🔄 Resets every Monday
+                Completed Tasks
+              </div>
+            </div>
+            <div className="space-y-2">
+              {topPerformers.length > 0 ? (
+                topPerformers.map((user, index) => (
+                  <div key={user.id} className={`flex items-center justify-between p-3 rounded-lg border ${
+                    user.id === currentUser.id 
+                      ? 'bg-blue-50 border-blue-200' 
+                      : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                        index === 0 ? 'bg-yellow-500 text-white' :
+                        index === 1 ? 'bg-gray-400 text-white' :
+                        index === 2 ? 'bg-amber-600 text-white' :
+                        'bg-slate-300 text-slate-700'
+                      }`}>
+                        {index + 1}
+                      </div>
+                      <div>
+                        <div className={`font-medium ${
+                          user.id === currentUser.id ? 'text-blue-700' : 'text-slate-700'
+                        }`}>
+                          {user.id === currentUser.id ? '👤 ' : ''}{user.name}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {user.completedTasks} tasks completed
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold text-blue-600 text-lg">{user.executionPoints}</div>
+                      <div className="text-xs text-slate-500">⚡ EP</div>
+                      <div className="text-xs text-slate-400">TCS: {user.tcs}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 text-slate-500">
+                  <div className="text-lg mb-2">⚡</div>
+                  <div className="text-sm">No execution points yet</div>
+                  <div className="text-xs mt-1">Complete tasks to earn EP and appear on the leaderboard</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Top Leaders View (LP) */}
+        {leaderboardView === 'topLeaders' && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="font-medium text-slate-700">🎯 Top Leadership Points (LP)</h4>
+            </div>
+            <div className="space-y-2">
+              {topPerformers.length > 0 ? (
+                topPerformers.map((user, index) => (
+                  <div key={user.id} className={`flex items-center justify-between p-3 rounded-lg border ${
+                    user.id === currentUser.id 
+                      ? 'bg-purple-50 border-purple-200' 
+                      : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                        index === 0 ? 'bg-yellow-500 text-white' :
+                        index === 1 ? 'bg-gray-400 text-white' :
+                        index === 2 ? 'bg-amber-600 text-white' :
+                        'bg-slate-300 text-slate-700'
+                      }`}>
+                        {index + 1}
+                      </div>
+                      <div>
+                        <div className={`font-medium ${
+                          user.id === currentUser.id ? 'text-purple-700' : 'text-slate-700'
+                        }`}>
+                          {user.id === currentUser.id ? '👤 ' : ''}{user.name}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          Leadership role
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold text-purple-600 text-lg">{user.leadershipPoints}</div>
+                      <div className="text-xs text-slate-500">🎯 LP</div>
+                      <div className="text-xs text-slate-400">TCS: {user.tcs}</div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 text-slate-500">
+                  <div className="text-lg mb-2">🎯</div>
+                  <div className="text-sm">No leadership points yet</div>
+                  <div className="text-xs mt-1">Assign tasks to your team to earn LP</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Overall View (TCS) */}
+        {leaderboardView === 'overall' && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="font-medium text-slate-700">🏆 Total Contribution Score (TCS)</h4>
+              <div className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
+                EP + LP + Bonuses
               </div>
             </div>
             <div className="space-y-2">
@@ -646,22 +866,22 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
                           {user.id === currentUser.id ? '👤 ' : ''}{user.name}
                         </div>
                         <div className="text-xs text-slate-500">
-                          {user.weeklyTasks} tasks this week • {user.completedTasks} total tasks
+                          ⚡{user.executionPoints} EP + 🎯{user.leadershipPoints} LP + 🎁{user.bonusPoints}
                         </div>
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="font-bold text-slate-700">{user.weekPoints}</div>
-                      <div className="text-xs text-slate-500">week points</div>
-                      <div className="text-xs text-slate-400">({user.totalPoints} total)</div>
+                      <div className="font-bold text-brand-600 text-lg">{user.tcs}</div>
+                      <div className="text-xs text-slate-500">🏆 TCS</div>
+                      <div className="text-xs text-slate-400">{user.completedTasks} tasks</div>
                     </div>
                   </div>
                 ))
               ) : (
                 <div className="text-center py-8 text-slate-500">
-                  <div className="text-lg mb-2">📊</div>
-                  <div className="text-sm">No weekly points yet</div>
-                  <div className="text-xs mt-1">Complete tasks this week to appear on the leaderboard</div>
+                  <div className="text-lg mb-2">🏆</div>
+                  <div className="text-sm">No points yet</div>
+                  <div className="text-xs mt-1">Complete and assign tasks to build your TCS</div>
                 </div>
               )}
             </div>

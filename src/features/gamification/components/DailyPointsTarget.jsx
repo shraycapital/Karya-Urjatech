@@ -54,9 +54,15 @@ export default function DailyPointsTarget({
       basePoints = task.points;
     }
 
+    // R&D/New Skill tasks get 5x base points
+    const isRdNewSkill = task?.isRdNewSkill || false;
+    if (isRdNewSkill) {
+      basePoints = basePoints * 5;
+    }
+
     const basePerUser = Math.round(basePoints / assignedUserCount);
-    const collaborationBonus = assignedUserCount > 1 ? Math.round(basePerUser * 0.1) : 0;
-    const urgentBonus = task?.isUrgent ? Math.round(basePerUser * 0.25) : 0;
+    const collaborationBonus = !isRdNewSkill && assignedUserCount > 1 ? Math.round(basePerUser * 0.1) : 0;
+    const urgentBonus = !isRdNewSkill && task?.isUrgent ? Math.round(basePerUser * 0.25) : 0;
     return basePerUser + collaborationBonus + urgentBonus;
   };
 

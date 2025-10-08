@@ -3,14 +3,13 @@ import { db, auth, enablePushNotifications, onForegroundMessage } from './fireba
 import { collection, onSnapshot, doc, addDoc, updateDoc, deleteDoc, getDocs, serverTimestamp, arrayUnion } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 
-import { subscribeTasks, createTask as addTaskData, patchTask as updateTaskData, removeTask as deleteTaskData } from './features/tasks/api/taskApi';
+import { subscribeTasks, createTask as addTaskData, patchTask as updateTaskData, removeTask as deleteTaskData, loadTaskHeavyItems } from './features/tasks/api/taskApi';
 import { useI18n } from './shared/i18n/translations.js';
 import Header from './shared/components/Header.jsx';
 import LoginScreen from './features/auth/LoginScreen.jsx';
 import { ROLES, STATUSES } from './shared/constants.js';
 import { canAccessFeature } from './shared/utils/permissions.js';
 import Section from './shared/components/Section.jsx';
-import NotificationOverlay from './features/notifications/components/NotificationOverlay.jsx';
 import { LogOutIcon, SettingsIcon } from './shared/components/Icons.jsx';
 import { logActivity } from './shared/utils/activityLogger.js';
 import { toISTISOString } from './shared/utils/date';
@@ -97,15 +96,12 @@ function KaryaApp() {
   const [openTaskId, setOpenTaskId] = useState(null);
   const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
-  const [notifications, setNotifications] = useState(() => {
-    const saved = localStorage.getItem('kartavya_notifications');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [showNotification, setShowNotification] = useState(false);
   const [showPushBanner, setShowPushBanner] = useState(false);
   const [taskFeedback, setTaskFeedback] = useState(null);
   const [isEnablingPush, setIsEnablingPush] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [notifications, setNotifications] = useState([]);
+  const [showNotification, setShowNotification] = useState(false);
 
   // Listen for online/offline changes
   useEffect(() => {
@@ -137,21 +133,21 @@ function KaryaApp() {
     return Array.from(map.values());
   };
 
-  // Bootstrap: fetch initial snapshot (auth + dual collections) for first paint
+  // Progressive bootstrap: Load critical data first, defer heavy operations
   useEffect(() => {
     let unsubs = [];
     let loadingTimeout;
     
     async function bootstrap() {
-      // Add timeout to prevent infinite loading
+      // Reduced timeout for faster failure recovery
       loadingTimeout = setTimeout(() => {
         console.warn('Bootstrap timeout - forcing loading to false');
         setIsLoading(false);
         setLoadingError('Loading timeout - please refresh the page');
-      }, 15000); // 15 second timeout
+      }, 8000); // 8 second timeout
       
       try {
-        // Initialize PWA analytics with current user data
+        // Phase 1: Initialize lightweight services immediately
         const currentUserId = localStorage.getItem('kartavya_userId');
         const currentUserName = localStorage.getItem('kartavya_userName');
         initializePwaAnalytics(currentUserId, currentUserName);
@@ -165,7 +161,7 @@ function KaryaApp() {
           });
         }
         
-        // Ensure read access if rules require auth
+        // Phase 2: Quick auth check (non-blocking)
         try {
           if (!auth.currentUser) {
             await signInAnonymously(auth);
@@ -174,18 +170,16 @@ function KaryaApp() {
           console.warn('Anonymous sign-in failed (continuing):', e?.message);
         }
 
-        const [usersLower, usersUpper, deptLower, deptUpper, a] = await Promise.all([
+        // Phase 3: Load only critical data (users) first
+        const [usersLower, usersUpper] = await Promise.all([
           getDocs(collection(db, 'users')).catch(() => ({ docs: [] })),
-          getDocs(collection(db, 'Users')).catch(() => ({ docs: [] })),
-          getDocs(collection(db, 'departments')).catch(() => ({ docs: [] })),
-          getDocs(collection(db, 'Departments')).catch(() => ({ docs: [] })),
-          getDocs(collection(db, 'activityLog')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'Users')).catch(() => ({ docs: [] }))
         ]);
 
         const usersA = usersLower.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
         const usersB = usersUpper.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
         const mergedUsers = mergeById(usersA, usersB);
-        console.log('Bootstrap: Loaded users:', mergedUsers.length, mergedUsers.map(u => u.username || u.name || u.email));
+        
         setUsers(mergedUsers);
         
         // Store users globally for PWA analytics
@@ -193,23 +187,15 @@ function KaryaApp() {
           window.kartavyaUsers = mergedUsers;
         }
 
-        const deptA = deptLower.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-        const deptB = deptUpper.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-        const mergedDept = mergeById(deptA, deptB);
-        setDepartments(mergedDept);
-
-        
-        // Clear timeout since we loaded successfully
+        // Clear timeout and show UI immediately after users load
         if (loadingTimeout) {
           clearTimeout(loadingTimeout);
         }
         
-        // Only set loading to false after users are loaded (critical for login)
         if (mergedUsers.length > 0) {
           console.log('Bootstrap: Users loaded successfully, setting loading to false');
           setIsLoading(false);
         } else {
-          // If no users found, still set loading to false but show appropriate message
           console.log('Bootstrap: No users found, setting loading to false');
           setIsLoading(false);
         }
@@ -221,15 +207,22 @@ function KaryaApp() {
           if (tid) setOpenTaskId(tid);
         } catch {}
 
-        // Load tasks immediately (critical for functionality)
-        const unsub5 = subscribeTasks(setTasks);
+        // Phase 4: Load departments in background (non-blocking)
+        Promise.all([
+          getDocs(collection(db, 'departments')).catch(() => ({ docs: [] })),
+          getDocs(collection(db, 'Departments')).catch(() => ({ docs: [] }))
+        ]).then(([deptLower, deptUpper]) => {
+          const deptA = deptLower.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+          const deptB = deptUpper.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+          const mergedDept = mergeById(deptA, deptB);
+          setDepartments(mergedDept);
+        }).catch(e => console.warn('Department loading failed:', e));
 
-        // Start realtime listeners immediately for admin panel functionality
+        // Phase 5: Start realtime listeners (non-blocking)
         const unsub1 = onSnapshot(collection(db, 'users'), (snap) => {
           const us = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setUsers((prev) => {
             const merged = mergeById(us, prev);
-            // Update global users for PWA analytics
             if (typeof window !== 'undefined') {
               window.kartavyaUsers = merged;
             }
@@ -240,7 +233,6 @@ function KaryaApp() {
           const us = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setUsers((prev) => {
             const merged = mergeById(prev, us);
-            // Update global users for PWA analytics
             if (typeof window !== 'undefined') {
               window.kartavyaUsers = merged;
             }
@@ -255,6 +247,40 @@ function KaryaApp() {
           const dep = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setDepartments((prev) => mergeById(prev, dep));
         });
+
+        // Phase 6: Load tasks with progressive loading (non-blocking)
+        const unsub5 = subscribeTasks((newTasks) => {
+          setTasks(newTasks);
+          
+          // Load heavy items for tasks that need them after a short delay
+          setTimeout(() => {
+            const tasksNeedingHeavyItems = newTasks
+              .filter(task => !task._progressiveLoaded)
+              .slice(0, 10) // Load heavy items for first 10 tasks initially
+              .map(task => task.id);
+            
+            if (tasksNeedingHeavyItems.length > 0) {
+              loadTaskHeavyItems(tasksNeedingHeavyItems).then(heavyItemsData => {
+                setTasks(prevTasks => 
+                  prevTasks.map(task => {
+                    const heavyData = heavyItemsData.find(h => h.id === task.id);
+                    if (heavyData) {
+                      return {
+                        ...task,
+                        photos: heavyData.photos,
+                        comments: heavyData.comments,
+                        notes: heavyData.notes,
+                        _progressiveLoaded: true
+                      };
+                    }
+                    return task;
+                  })
+                );
+              });
+            }
+          }, 1000); // 1 second delay to let basic UI render first
+        }, { progressive: true, loadHeavyItems: false });
+
         unsubs = [unsub1, unsub2, unsub3, unsub4, unsub5];
       } catch (e) {
         console.error('Bootstrap error', e);
@@ -407,7 +433,6 @@ function KaryaApp() {
     }
   }, [currentUser]);
 
-  const latestUnreadNotification = useMemo(() => notifications.find(n => !n.read), [notifications]);
 
   // Check for new task notifications
   useEffect(() => {
@@ -477,31 +502,12 @@ function KaryaApp() {
     }
   }, [tasks, currentUser]);
 
-  // Save notifications to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem('kartavya_notifications', JSON.stringify(notifications));
-  }, [notifications]);
 
   // Save notification settings to localStorage whenever they change
   useEffect(() => {
     localStorage.setItem('kartavya_notification_settings', JSON.stringify(notificationSettings));
   }, [notificationSettings]);
 
-  // Auto-hide notification after 10 seconds
-  useEffect(() => {
-    if (showNotification && notifications.length > 0) {
-      const timer = setTimeout(() => {
-        setShowNotification(false);
-        // Mark the visible notification as read when it auto-hides
-        const unread = notifications.find(n => !n.read);
-        if (unread) {
-          markNotificationAsRead(unread.id);
-        }
-      }, 10000); // 10 seconds
-      
-      return () => clearTimeout(timer);
-    }
-  }, [showNotification, notifications]);
 
   // Check for upcoming task deadlines and send reminders
   useEffect(() => {
@@ -644,20 +650,6 @@ function KaryaApp() {
 
   // --- Firestore Mutations ---
 
-  // Notification functions
-  const markNotificationAsRead = (notificationId) => {
-    setNotifications(prev => 
-      prev.map(n => n.id === notificationId ? { ...n, read: true } : n)
-    );
-  };
-
-  const removeNotification = (notificationId) => {
-    setNotifications(prev => prev.filter(n => n.id !== notificationId));
-  };
-
-  const clearAllNotifications = () => {
-    setNotifications([]);
-  };
 
   const updateNotificationSettings = (newSettings) => {
     setNotificationSettings(newSettings);
@@ -733,21 +725,84 @@ function KaryaApp() {
     }
   };
 
-  // Guard: only decide login after initial data is loaded
+  // Progressive loading: Show skeleton UI immediately, then load data
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-surface text-slate-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-8 h-8 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="mt-2 text-sm text-slate-500">{t('loading')}</p>
+      <div className="min-h-screen bg-surface text-slate-900">
+        {/* Header Skeleton */}
+        <div className="bg-white border-b border-slate-200 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-slate-200 rounded animate-pulse"></div>
+              <div className="w-24 h-6 bg-slate-200 rounded animate-pulse"></div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 bg-slate-200 rounded animate-pulse"></div>
+              <div className="w-6 h-6 bg-slate-200 rounded animate-pulse"></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Content Skeleton */}
+        <main className="mx-auto max-w-md p-3">
+          {/* Daily Points Target Skeleton */}
+          <div className="bg-white rounded-lg p-4 mb-4 border border-slate-200">
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-32 h-5 bg-slate-200 rounded animate-pulse"></div>
+              <div className="w-16 h-4 bg-slate-200 rounded animate-pulse"></div>
+            </div>
+            <div className="w-full h-3 bg-slate-200 rounded animate-pulse mb-2"></div>
+            <div className="w-3/4 h-3 bg-slate-200 rounded animate-pulse"></div>
+          </div>
+
+          {/* Task Filters Skeleton */}
+          <div className="flex gap-2 mb-4 overflow-x-auto">
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className="w-20 h-8 bg-slate-200 rounded-full animate-pulse flex-shrink-0"></div>
+            ))}
+          </div>
+
+          {/* Task List Skeleton */}
+          <div className="space-y-3">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="bg-white rounded-lg p-4 border border-slate-200">
+                <div className="flex items-start justify-between mb-2">
+                  <div className="w-3/4 h-5 bg-slate-200 rounded animate-pulse"></div>
+                  <div className="w-16 h-4 bg-slate-200 rounded animate-pulse"></div>
+                </div>
+                <div className="w-full h-4 bg-slate-200 rounded animate-pulse mb-2"></div>
+                <div className="w-2/3 h-4 bg-slate-200 rounded animate-pulse"></div>
+              </div>
+            ))}
+          </div>
+        </main>
+
+        {/* Bottom Tabs Skeleton */}
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4">
+          <div className="flex justify-around">
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className="flex flex-col items-center gap-1">
+                <div className="w-6 h-6 bg-slate-200 rounded animate-pulse"></div>
+                <div className="w-12 h-3 bg-slate-200 rounded animate-pulse"></div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Loading indicator */}
+        <div className="fixed top-4 right-4 bg-white rounded-lg shadow-lg p-3 border border-slate-200">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 border-2 border-brand-600 border-t-transparent rounded-full animate-spin"></div>
+            <span className="text-sm text-slate-600">{t('loading')}</span>
+          </div>
           {loadingError && (
-            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{loadingError}</p>
+            <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
+              {loadingError}
               <button 
                 onClick={() => window.location.reload()} 
-                className="mt-2 px-3 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
+                className="ml-2 px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700"
               >
-                Refresh Page
+                Refresh
               </button>
             </div>
           )}
@@ -822,11 +877,6 @@ function KaryaApp() {
         tasks={tasks}
         users={users}
         departments={departments}
-        notifications={notifications}
-        onToggleNotifications={() => setShowNotification(!showNotification)}
-        onMarkNotificationAsRead={markNotificationAsRead}
-        onRemoveNotification={removeNotification}
-        onClearAllNotifications={clearAllNotifications}
         onEnablePush={handleEnablePush}
       />
       {/* Smart Refresh Indicator */}
@@ -839,9 +889,37 @@ function KaryaApp() {
         {/* Tab Content */}
         {activeTab === 'tasks' && (
           <Suspense fallback={
-            <div className="flex items-center justify-center p-8">
-              <div className="w-8 h-8 border-2 border-brand-600 border-t-transparent rounded-full animate-spin"></div>
-              <span className="ml-2 text-sm text-slate-500">Loading tasks...</span>
+            <div className="space-y-4">
+              {/* Daily Points Target Skeleton */}
+              <div className="bg-white rounded-lg p-4 border border-slate-200">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-32 h-5 bg-slate-200 rounded animate-pulse"></div>
+                  <div className="w-16 h-4 bg-slate-200 rounded animate-pulse"></div>
+                </div>
+                <div className="w-full h-3 bg-slate-200 rounded animate-pulse mb-2"></div>
+                <div className="w-3/4 h-3 bg-slate-200 rounded animate-pulse"></div>
+              </div>
+              
+              {/* Task Filters Skeleton */}
+              <div className="flex gap-2 overflow-x-auto">
+                {[1, 2, 3, 4].map(i => (
+                  <div key={i} className="w-20 h-8 bg-slate-200 rounded-full animate-pulse flex-shrink-0"></div>
+                ))}
+              </div>
+              
+              {/* Task List Skeleton */}
+              <div className="space-y-3">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="bg-white rounded-lg p-4 border border-slate-200">
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="w-3/4 h-5 bg-slate-200 rounded animate-pulse"></div>
+                      <div className="w-16 h-4 bg-slate-200 rounded animate-pulse"></div>
+                    </div>
+                    <div className="w-full h-4 bg-slate-200 rounded animate-pulse mb-2"></div>
+                    <div className="w-2/3 h-4 bg-slate-200 rounded animate-pulse"></div>
+                  </div>
+                ))}
+              </div>
             </div>
           }>
             <TasksTab
@@ -859,9 +937,20 @@ function KaryaApp() {
         
         {activeTab === 'points' && (
           <Suspense fallback={
-            <div className="flex items-center justify-center p-8">
-              <div className="w-8 h-8 border-2 border-brand-600 border-t-transparent rounded-full animate-spin"></div>
-              <span className="ml-2 text-sm text-slate-500">Loading points...</span>
+            <div className="space-y-4">
+              <div className="bg-white rounded-lg p-4 border border-slate-200">
+                <div className="w-32 h-6 bg-slate-200 rounded animate-pulse mb-3"></div>
+                <div className="w-full h-4 bg-slate-200 rounded animate-pulse mb-2"></div>
+                <div className="w-2/3 h-4 bg-slate-200 rounded animate-pulse"></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {[1, 2, 3, 4].map(i => (
+                  <div key={i} className="bg-white rounded-lg p-4 border border-slate-200">
+                    <div className="w-16 h-5 bg-slate-200 rounded animate-pulse mb-2"></div>
+                    <div className="w-12 h-8 bg-slate-200 rounded animate-pulse"></div>
+                  </div>
+                ))}
+              </div>
             </div>
           }>
             <PointsTab
@@ -1005,16 +1094,6 @@ function KaryaApp() {
         </div>
       )}
 
-      {/* Notification Overlay */}
-      {showNotification && latestUnreadNotification && (
-        <NotificationOverlay
-          notification={latestUnreadNotification}
-          onClose={() => setShowNotification(false)}
-          onMarkAsRead={markNotificationAsRead}
-          onTaskClick={handleTaskClick}
-          t={t}
-        />
-      )}
 
       {/* Locations Modal */}
       {isLocationsModalOpen && currentUser?.role === ROLES.ADMIN && (
@@ -1037,20 +1116,22 @@ function KaryaApp() {
       )}
 
       {/* Attendance Modal */}
-      <Suspense fallback={
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-8">
-            <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading attendance...</p>
+      {isAttendanceModalOpen && (
+        <Suspense fallback={
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-8">
+              <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading attendance...</p>
+            </div>
           </div>
-        </div>
-      }>
-        <AttendanceModal
-          isOpen={isAttendanceModalOpen}
-          onClose={() => setIsAttendanceModalOpen(false)}
-          t={t}
-        />
-      </Suspense>
+        }>
+          <AttendanceModal
+            isOpen={isAttendanceModalOpen}
+            onClose={() => setIsAttendanceModalOpen(false)}
+            t={t}
+          />
+        </Suspense>
+      )}
     </div>
     </LocationPermission>
   );

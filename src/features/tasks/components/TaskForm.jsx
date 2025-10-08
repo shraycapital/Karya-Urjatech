@@ -21,6 +21,8 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
   const [isUrgent, setIsUrgent] = useState(false); // Add urgent state
   const [isScheduled, setIsScheduled] = useState(false); // Add scheduled task state
   const [recurrencePattern, setRecurrencePattern] = useState(null); // Add recurrence pattern state
+  const [isRdNewSkill, setIsRdNewSkill] = useState(false); // Add R&D/New Skill state
+  const [projectSkillName, setProjectSkillName] = useState(''); // Add project/skill name state
   const [errors, setErrors] = useState({});
 
   const availableUsers = useMemo(() => {
@@ -147,15 +149,24 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
         points: DIFFICULTY_CONFIG[difficulty].points,
         targetDate: targetDate || toISTDateString(),
         status: 'Pending',
-        notes: note.trim() ? [{ text: note.trim(), type: 'creation' }] : [],
+        notes: note.trim() ? [{ 
+          text: note.trim(), 
+          type: 'creation',
+          createdAt: new Date().toISOString(),
+          createdBy: currentUser.id,
+          editedBy: currentUser.id,
+          editedByName: currentUser.name
+        }] : [],
         photos: photos,
         isUrgent, // Include isUrgent in submission
         isScheduled, // Include scheduled task flag
         recurrencePattern, // Include recurrence pattern
         scheduledStartDate: isScheduled ? targetDate : null, // Set start date for scheduled tasks
+        isRdNewSkill, // Include R&D/New Skill flag
+        projectSkillName: isRdNewSkill ? projectSkillName : '', // Include project/skill name if R&D
       });
       try { localStorage.setItem('kartavya_lastAssignees', JSON.stringify(assignedUserIds)); } catch {}
-      setTitle(''); setNote(''); setPhotos([]); setAssignedUserIds([]); setAssigneeOpen(false); setDifficulty(DIFFICULTY_LEVELS.MEDIUM); setTargetDate(toISTDateString()); setIsUrgent(false); setIsScheduled(false); setRecurrencePattern(null);
+      setTitle(''); setNote(''); setPhotos([]); setAssignedUserIds([]); setAssigneeOpen(false); setDifficulty(DIFFICULTY_LEVELS.MEDIUM); setTargetDate(toISTDateString()); setIsUrgent(false); setIsScheduled(false); setRecurrencePattern(null); setIsRdNewSkill(false); setProjectSkillName('');
       onCancel(); // Close the modal after successful creation
     } catch (err) {
       console.error('Failed to create task:', err);
@@ -265,6 +276,37 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
           {t('urgentTask')}
         </label>
       </div>
+
+      {/* R&D/New Skill Checkbox */}
+      <div className="flex items-center mt-2">
+        <input
+          type="checkbox"
+          id="isRdNewSkill"
+          checked={isRdNewSkill}
+          onChange={(e) => setIsRdNewSkill(e.target.checked)}
+          className="mr-2 h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+        />
+        <label htmlFor="isRdNewSkill" className="text-sm text-slate-700">
+          R&D/New Skill (5x EP, 100% LP)
+        </label>
+      </div>
+
+      {/* Project/Skill Name Field - Only show when R&D is selected */}
+      {isRdNewSkill && (
+        <div className="mt-3">
+          <label htmlFor="projectSkillName" className="block text-sm font-medium text-slate-700 mb-1">
+            Project/Skill Name (Optional)
+          </label>
+          <input
+            type="text"
+            id="projectSkillName"
+            value={projectSkillName}
+            onChange={(e) => setProjectSkillName(e.target.value)}
+            placeholder="Enter project or skill name..."
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+          />
+        </div>
+      )}
 
       {/* Scheduled Task Checkbox */}
       <div className="flex items-center mt-2">

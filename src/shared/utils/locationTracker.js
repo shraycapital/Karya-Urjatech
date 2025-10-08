@@ -40,17 +40,25 @@ const toDate = (value) => {
 };
 
 const toTimestampBounds = (startDate, endDate) => {
-  const start = toDate(startDate) ?? new Date(0);
-  const end = toDate(endDate) ?? new Date();
-  const normalizedStart = start > end ? end : start;
-  const normalizedEnd = end < start ? start : end;
+  const resolvedStart = toDate(startDate);
+  const resolvedEnd = toDate(endDate);
+
+  let start = resolvedStart ?? new Date(0);
+  let end = resolvedEnd ?? new Date();
+
+  if (start.getTime() > end.getTime()) {
+    const tmp = start;
+    start = end;
+    end = tmp;
+  }
+
   return {
     start,
     end,
-    startMs: normalizedStart.getTime(),
-    endMs: normalizedEnd.getTime(),
-    startTimestamp: Timestamp.fromDate(normalizedStart),
-    endTimestamp: Timestamp.fromDate(normalizedEnd)
+    startMs: start.getTime(),
+    endMs: end.getTime(),
+    startTimestamp: Timestamp.fromDate(start),
+    endTimestamp: Timestamp.fromDate(end),
   };
 };
 
@@ -163,8 +171,9 @@ export const getUserLocationData = async (userId, startDate, endDate) => {
       .map((record) => normalizeLocationRecord(record))
       .filter((record) => {
         if (!record.occurredAtMs) return false;
-        const withinRange = (!startMs || record.occurredAtMs >= startMs) && (!endMs || record.occurredAtMs <= endMs);
-        return withinRange;
+        const meetsStart = startMs ? record.occurredAtMs >= startMs : true;
+        const meetsEnd = endMs ? record.occurredAtMs <= endMs : true;
+        return meetsStart && meetsEnd;
       })
       .sort((a, b) => (b.occurredAtMs || 0) - (a.occurredAtMs || 0));
 
@@ -327,8 +336,7 @@ export const getUsersLocationStats = async (userIds, startDate, endDate) => {
         const record = { id: doc.id, ...doc.data() };
         const normalized = normalizeLocationRecord(record);
         if (!normalized.occurredAtMs) return;
-        const withinRange = (!startMs || normalized.occurredAtMs >= startMs) && (!endMs || normalized.occurredAtMs <= endMs);
-        if (!withinRange) return;
+        if (normalized.occurredAtMs < startMs || normalized.occurredAtMs > endMs) return;
         const target = stats[record.userId];
         if (!target) return;
 

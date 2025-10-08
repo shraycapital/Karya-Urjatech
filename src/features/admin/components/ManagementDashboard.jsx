@@ -150,7 +150,7 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
       
       // Search query
       if (searchQuery && !task.title.toLowerCase().includes(searchQuery.toLowerCase()) && 
-          !task.notes?.some(note => note.text?.toLowerCase().includes(searchQuery.toLowerCase()))) {
+          !task.notes?.some(note => note?.text?.toLowerCase().includes(searchQuery.toLowerCase()))) {
         return false;
       }
       
@@ -340,14 +340,31 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
 
   const allColumns = [
     { key: 'title', label: 'Task Title', sortable: true },
+    { key: 'description', label: 'Description', sortable: false },
     { key: 'department', label: 'Department', sortable: true },
     { key: 'assignedBy', label: 'Assigned By', sortable: true },
+    { key: 'originalAssignedBy', label: 'Original Assigner', sortable: true },
     { key: 'assignedUsers', label: 'Assigned To', sortable: true },
     { key: 'difficulty', label: 'Difficulty', sortable: true },
     { key: 'urgency', label: 'Urgency', sortable: true },
     { key: 'status', label: 'Status', sortable: true },
     { key: 'targetDate', label: 'Target Date', sortable: true },
     { key: 'createdAt', label: 'Created Date', sortable: true },
+    { key: 'startedAt', label: 'Started Date', sortable: true },
+    { key: 'completedAt', label: 'Completed Date', sortable: true },
+    { key: 'updatedAt', label: 'Updated Date', sortable: true },
+    { key: 'points', label: 'Points', sortable: true },
+    { key: 'isRdNewSkill', label: 'R&D/New Skill', sortable: true },
+    { key: 'projectSkillName', label: 'Project/Skill Name', sortable: false },
+    { key: 'isScheduled', label: 'Scheduled Task', sortable: true },
+    { key: 'recurrencePattern', label: 'Recurrence', sortable: false },
+    { key: 'notes', label: 'Notes Count', sortable: true },
+    { key: 'comments', label: 'Comments Count', sortable: true },
+    { key: 'photos', label: 'Photos Count', sortable: true },
+    { key: 'hasBlockingTasks', label: 'Has Blocking Tasks', sortable: true },
+    { key: 'needsApproval', label: 'Needs Approval', sortable: true },
+    { key: 'approvedBy', label: 'Approved By', sortable: true },
+    { key: 'rejectedBy', label: 'Rejected By', sortable: true },
     { key: 'actions', label: 'Actions', sortable: false }
   ];
 
@@ -761,6 +778,79 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                   <option value="asc">Oldest First</option>
                 </select>
               </div>
+
+              {/* Column Visibility Filter */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Table Columns</label>
+                <div className="relative">
+                  <button
+                    onClick={() => setOpenDropdown(openDropdown === 'columns' ? null : 'columns')}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-left flex items-center justify-between"
+                  >
+                    <span>Columns ({visibleColumns.length}/{allColumns.length})</span>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  
+                  {openDropdown === 'columns' && (
+                    <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-64 overflow-y-auto">
+                      <div className="p-2 border-b">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              const defaultColumns = ['title', 'status', 'department', 'assignedBy', 'assignedUsers', 'urgency', 'difficulty', 'targetDate', 'createdAt', 'actions'];
+                              setVisibleColumns(defaultColumns);
+                              setOpenDropdown(null);
+                            }}
+                            className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
+                          >
+                            Reset to Default
+                          </button>
+                          <button
+                            onClick={() => {
+                              setVisibleColumns(allColumns.map(col => col.key));
+                              setOpenDropdown(null);
+                            }}
+                            className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded hover:bg-green-200"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onClick={() => {
+                              setVisibleColumns(['title', 'actions']);
+                              setOpenDropdown(null);
+                            }}
+                            className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded hover:bg-gray-200"
+                          >
+                            Minimal
+                          </button>
+                        </div>
+                      </div>
+                      {allColumns.map((column) => (
+                        <label key={column.key} className="flex items-center px-3 py-2 hover:bg-gray-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={visibleColumns.includes(column.key)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setVisibleColumns([...visibleColumns, column.key]);
+                              } else {
+                                setVisibleColumns(visibleColumns.filter(col => col !== column.key));
+                              }
+                            }}
+                            className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <span className="text-sm text-gray-700">{column.label}</span>
+                          {!column.sortable && (
+                            <span className="ml-2 text-xs text-gray-400">(not sortable)</span>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -807,9 +897,15 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                                 <div>
                                   <div className="font-medium text-gray-900">{task.title}</div>
                                   {task.notes && Array.isArray(task.notes) && task.notes.length > 0 && task.notes[0]?.text && (
-                                    <div className="text-sm text-gray-500 line-clamp-1">{task.notes[0].text}</div>
+                                    <div className="text-sm text-gray-500 line-clamp-1">{task.notes[0]?.text}</div>
                                   )}
                                 </div>
+                              </div>
+                            );
+                          case 'description':
+                            return (
+                              <div className="text-sm text-gray-900 max-w-xs">
+                                <div className="line-clamp-2">{task.description || 'No description'}</div>
                               </div>
                             );
                           case 'department':
@@ -819,6 +915,10 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                           case 'assignedBy':
                             return (
                               <span className="text-sm text-gray-900">{task.assignedById ? users.find(u => u.id === task.assignedById)?.name || 'Unknown' : 'Unknown'}</span>
+                            );
+                          case 'originalAssignedBy':
+                            return (
+                              <span className="text-sm text-gray-900">{task.originalAssignedById ? users.find(u => u.id === task.originalAssignedById)?.name || 'Unknown' : 'Unknown'}</span>
                             );
                           case 'assignedUsers':
                             return (
@@ -851,6 +951,104 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                             const d = toSafeDate(task.createdAt) || toSafeDate(task.updatedAt) || toSafeDate(task.startedAt);
                             return (<span className="text-sm text-gray-900">{d ? formatDateTime(d) : 'N/A'}</span>);
                           }
+                          case 'startedAt': {
+                            const d = toSafeDate(task.startedAt);
+                            return (<span className="text-sm text-gray-900">{d ? formatDateTime(d) : 'Not started'}</span>);
+                          }
+                          case 'completedAt': {
+                            const d = toSafeDate(task.completedAt);
+                            return (<span className="text-sm text-gray-900">{d ? formatDateTime(d) : 'Not completed'}</span>);
+                          }
+                          case 'updatedAt': {
+                            const d = toSafeDate(task.updatedAt);
+                            return (<span className="text-sm text-gray-900">{d ? formatDateTime(d) : 'N/A'}</span>);
+                          }
+                          case 'points':
+                            return (
+                              <span className="text-sm text-gray-900 font-medium">
+                                {task.points || 0} pts
+                              </span>
+                            );
+                          case 'isRdNewSkill':
+                            return task.isRdNewSkill ? (
+                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                🔬 R&D
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">No</span>
+                            );
+                          case 'projectSkillName':
+                            return (
+                              <span className="text-sm text-gray-900">
+                                {task.projectSkillName || 'N/A'}
+                              </span>
+                            );
+                          case 'isScheduled':
+                            return task.isScheduled ? (
+                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                📅 Scheduled
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">No</span>
+                            );
+                          case 'recurrencePattern':
+                            return task.recurrencePattern ? (
+                              <span className="text-sm text-gray-900">
+                                {task.recurrencePattern.type || 'Unknown'}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">None</span>
+                            );
+                          case 'notes':
+                            return (
+                              <span className="text-sm text-gray-900">
+                                {task.notes ? task.notes.length : 0}
+                              </span>
+                            );
+                          case 'comments':
+                            return (
+                              <span className="text-sm text-gray-900">
+                                {task.comments ? task.comments.length : 0}
+                              </span>
+                            );
+                          case 'photos':
+                            return (
+                              <span className="text-sm text-gray-900">
+                                {task.photos ? task.photos.length : 0}
+                              </span>
+                            );
+                          case 'hasBlockingTasks':
+                            return task.hasBlockingTasks ? (
+                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                                🔒 Blocked
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">No</span>
+                            );
+                          case 'needsApproval':
+                            return task.needsApproval ? (
+                              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                ⏳ Pending
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">No</span>
+                            );
+                          case 'approvedBy':
+                            return task.approvedBy ? (
+                              <span className="text-sm text-gray-900">
+                                {users.find(u => u.id === task.approvedBy)?.name || 'Unknown'}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">Not approved</span>
+                            );
+                          case 'rejectedBy':
+                            return task.rejectedBy ? (
+                              <span className="text-sm text-red-600">
+                                {users.find(u => u.id === task.rejectedBy)?.name || 'Unknown'}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-500">Not rejected</span>
+                            );
                           case 'actions':
                             return (
                               <div className="flex items-center gap-2 text-sm text-gray-900">
@@ -960,22 +1158,101 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                       <span className="text-sm font-medium text-gray-500">Points:</span>
                       <p className="text-gray-900">{selectedTask.points || 0} points</p>
                     </div>
+                    {selectedTask.isRdNewSkill && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">R&D/New Skill:</span>
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 ml-2">
+                          🔬 R&D Task
+                        </span>
+                        {selectedTask.projectSkillName && (
+                          <p className="text-gray-900 mt-1">Project: {selectedTask.projectSkillName}</p>
+                        )}
+                      </div>
+                    )}
+                    {selectedTask.isScheduled && (
+                      <div>
+                        <span className="text-sm font-medium text-gray-500">Scheduled Task:</span>
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 ml-2">
+                          📅 Scheduled
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
               
+              {/* Photos Section */}
+              {selectedTask.photos && Array.isArray(selectedTask.photos) && selectedTask.photos.length > 0 && (
+                <div>
+                  <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    Photos ({selectedTask.photos.length})
+                  </h4>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {selectedTask.photos.map((photo, index) => (
+                      <div key={index} className="relative group">
+                        <img
+                          src={photo.url}
+                          alt={`Task photo ${index + 1}`}
+                          className="w-full h-32 object-cover rounded-lg border border-gray-200"
+                          onError={(e) => {
+                            e.target.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgdmlld0JveD0iMCAwIDEyOCAxMjgiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIxMjgiIGhlaWdodD0iMTI4IiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik00OCA0OEg4MFY4MEg0OFY0OFoiIGZpbGw9IiNEMUQ1REIiLz4KPHBhdGggZD0iTTU2IDU2SDcyVjcySDU2VjU2WiIgZmlsbD0iIzlDQTNBRiIvPgo8L3N2Zz4K';
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 rounded-lg flex items-center justify-center">
+                          <button
+                            onClick={() => window.open(photo.url, '_blank')}
+                            className="opacity-0 group-hover:opacity-100 bg-white bg-opacity-90 text-gray-800 px-3 py-1 rounded-full text-xs font-medium transition-opacity duration-200"
+                          >
+                            View Full Size
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Notes Section */}
               {selectedTask.notes && Array.isArray(selectedTask.notes) && selectedTask.notes.length > 0 && (
                 <div>
-                  <h4 className="font-medium text-gray-900 mb-2">Notes</h4>
-                  <div className="space-y-2">
+                  <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Notes ({selectedTask.notes.length})
+                  </h4>
+                  <div className="space-y-3">
                     {selectedTask.notes.map((note, index) => (
-                      <div key={index} className="bg-gray-50 p-3 rounded-lg">
-                        <p className="text-gray-700">{note.text}</p>
-                        {note.timestamp && (
-                          <p className="text-xs text-gray-500 mt-1">
-                            {formatDateTime(note.timestamp)}
-                          </p>
+                      <div key={index} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
+                              <span className="text-xs font-medium text-blue-700">
+                                {note?.editedByName?.charAt(0)?.toUpperCase() || note?.userName?.charAt(0)?.toUpperCase() || 'U'}
+                              </span>
+                            </div>
+                            <span className="font-medium text-sm text-gray-900">
+                              {note?.editedByName || note?.userName || 'Unknown User'}
+                            </span>
+                            {note?.editedByName && note?.userName && note.editedByName !== note.userName && (
+                              <span className="text-xs text-gray-500">(edited by {note.editedByName})</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {note?.timestamp ? formatDateTime(note.timestamp) : 
+                             note?.createdAt ? formatDateTime(note.createdAt) : 'Unknown date'}
+                          </div>
+                        </div>
+                        <p className="text-gray-700 whitespace-pre-wrap">{note?.text || 'No text available'}</p>
+                        {note?.type && (
+                          <div className="mt-2">
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                              {note.type}
+                            </span>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -1021,7 +1298,7 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                           </div>
                         </div>
                         <p className="text-sm text-gray-700 whitespace-pre-wrap">
-                          {comment.text}
+                          {comment?.text || 'No text available'}
                         </p>
                       </div>
                     ))}

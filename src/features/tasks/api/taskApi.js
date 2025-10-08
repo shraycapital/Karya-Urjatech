@@ -16,14 +16,33 @@ const getPrimaryCollection = () => collection(db, TASKS_COLLECTION);
 // Helper function to get the backup collection
 const getBackupCollection = () => collection(db, TASKS_COLLECTION_UPPER);
 
-export const subscribeTasks = (onChange) => {
+export const subscribeTasks = (onChange, options = {}) => {
+  const { progressive = true, loadHeavyItems = false } = options;
+  
   let currentPrimary = [];
   let currentBackup = [];
   const emit = () => {
     const map = new Map();
     currentBackup.forEach(t => map.set(t.id, t));
     currentPrimary.forEach(t => map.set(t.id, t)); // prefer primary
-    onChange(Array.from(map.values()));
+    
+    // If progressive loading is enabled, strip heavy items from initial load
+    const tasks = Array.from(map.values()).map(task => {
+      if (progressive && !loadHeavyItems) {
+        return {
+          ...task,
+          // Keep basic info for fast loading
+          photos: task.photos ? [] : [], // Empty array for photos initially
+          comments: task.comments ? [] : [], // Empty array for comments initially
+          // Keep detailed notes but limit to first note for initial display
+          notes: task.notes && Array.isArray(task.notes) ? [task.notes[0]] : [],
+          _progressiveLoaded: false // Flag to track progressive loading state
+        };
+      }
+      return { ...task, _progressiveLoaded: true };
+    });
+    
+    onChange(tasks);
   };
 
   (async () => {
@@ -50,6 +69,56 @@ export const subscribeTasks = (onChange) => {
   });
 
   return () => { unsub1(); unsub2(); };
+};
+
+// Function to load heavy items (photos, full notes, comments) for specific tasks
+export const loadTaskHeavyItems = async (taskIds) => {
+  if (!Array.isArray(taskIds) || taskIds.length === 0) return [];
+  
+  try {
+    const tasksWithHeavyItems = [];
+    
+    for (const taskId of taskIds) {
+      // Try primary collection first
+      let taskDoc = null;
+      try {
+        const primaryDoc = await getDoc(doc(db, TASKS_COLLECTION, taskId));
+        if (primaryDoc.exists()) {
+          taskDoc = primaryDoc;
+        }
+      } catch (error) {
+        console.log('Primary collection fetch failed for task:', taskId);
+      }
+      
+      // Try backup collection if primary failed
+      if (!taskDoc) {
+        try {
+          const backupDoc = await getDoc(doc(db, TASKS_COLLECTION_UPPER, taskId));
+          if (backupDoc.exists()) {
+            taskDoc = backupDoc;
+          }
+        } catch (error) {
+          console.log('Backup collection fetch failed for task:', taskId);
+        }
+      }
+      
+      if (taskDoc) {
+        const taskData = taskDoc.data();
+        tasksWithHeavyItems.push({
+          id: taskId,
+          photos: taskData.photos || [],
+          comments: taskData.comments || [],
+          notes: taskData.notes || [],
+          _progressiveLoaded: true
+        });
+      }
+    }
+    
+    return tasksWithHeavyItems;
+  } catch (error) {
+    console.error('Error loading heavy items for tasks:', error);
+    return [];
+  }
 };
 
 export const createTask = async (taskData, currentUserId, currentUserName) => {
@@ -81,6 +150,8 @@ export const createTask = async (taskData, currentUserId, currentUserName) => {
     updatedById: currentUserId,
     assignedById: currentUserId,
     assignedByName: currentUserName,
+    originalAssignedById: currentUserId,
+    originalAssignedByName: currentUserName,
     startedAt: taskData.startedAt || null,
     completedAt: taskData.completedAt || null,
     notes: taskData.notes || [],
@@ -140,7 +211,12 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
   const effectiveUserId = currentUserId || (typeof localStorage !== 'undefined' ? localStorage.getItem('kartavya_userId') : null) || 'system';
   const effectiveUserName = currentUserName || (typeof localStorage !== 'undefined' ? (localStorage.getItem('kartavya_userName') || 'Unknown') : 'Unknown');
 
-  const data = { ...updates, updatedAt: serverTimestamp(), updatedById: effectiveUserId };
+  // Clean undefined values from updates
+  const cleanUpdates = Object.fromEntries(
+    Object.entries(updates).filter(([key, value]) => value !== undefined)
+  );
+  
+  const data = { ...cleanUpdates, updatedAt: serverTimestamp(), updatedById: effectiveUserId };
   if (updates.status === 'Ongoing' && !updates.startedAt) data.startedAt = serverTimestamp();
   if (updates.status === 'Complete' && !updates.completedAt) data.completedAt = serverTimestamp();
   if (updates.status === 'Pending') {
@@ -148,9 +224,11 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
     data.completedAt = null;
   }
   // If assignment changed, stamp assignedBy as the actor performing the change
-  if (Object.prototype.hasOwnProperty.call(updates, 'assignedUserIds')) {
+  // But preserve the original assignedBy fields
+  if (Object.prototype.hasOwnProperty.call(cleanUpdates, 'assignedUserIds')) {
     data.assignedById = effectiveUserId;
     data.assignedByName = effectiveUserName;
+    // Don't update originalAssignedById and originalAssignedByName - they should remain unchanged
   }
   
   await updateDoc(doc(getPrimaryCollection(), taskId), data);
@@ -158,17 +236,17 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
   // Log task update activity
   if (currentTask) {
     try {
-      const action = updates.status ? 
-        (updates.status === 'Ongoing' ? 'start' : 
-         updates.status === 'Complete' ? 'complete' : 
-         updates.status === 'Pending' ? 'reopen' : 'update') : 'update';
+      const action = cleanUpdates.status ? 
+        (cleanUpdates.status === 'Ongoing' ? 'start' : 
+         cleanUpdates.status === 'Complete' ? 'complete' : 
+         cleanUpdates.status === 'Pending' ? 'reopen' : 'update') : 'update';
       
       await logTaskActivity(action, currentTask, effectiveUserId, effectiveUserName, {
-        changes: Object.keys(updates),
+        changes: Object.keys(cleanUpdates),
         previousStatus: currentTask.status,
-        newStatus: updates.status || currentTask.status,
+        newStatus: cleanUpdates.status || currentTask.status,
         previousValues: currentTask,
-        newValues: updates
+        newValues: cleanUpdates
       });
     } catch (error) {
       console.warn('Failed to log task update activity:', error);
@@ -177,6 +255,10 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
 };
 
 export const removeTask = async (taskId, currentUserId = 'system', currentUserName = 'System', deleteReason = 'No reason provided') => {
+  if (deleteReason === undefined || deleteReason === null) {
+    deleteReason = 'No reason provided';
+  }
+
   // Get the current task data for logging
   let currentTask = null;
   try {
@@ -193,7 +275,7 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
   if (currentTask) {
     const deletedAt = new Date();
     const deleteNote = `Task deleted on ${deletedAt.toLocaleDateString()} at ${deletedAt.toLocaleTimeString()} by ${currentUserName}. Reason: ${deleteReason}`;
-    
+
     // Add the deletion note to existing notes array
     const existingNotes = Array.isArray(currentTask.notes) ? currentTask.notes : [];
     const updatedNotes = [
@@ -206,7 +288,7 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
         userName: currentUserName
       }
     ];
-    
+
     // Update the task with deleted status and reason
     const updateData = {
       status: 'Deleted',
@@ -216,9 +298,11 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
       deleteReason: deleteReason,
       notes: updatedNotes
     };
-    
+
     await updateDoc(doc(getPrimaryCollection(), taskId), updateData);
-    
+
+    console.debug('Task delete update payload', { taskId, updateData });
+
     // Log task deletion activity
     try {
       await logTaskActivity('soft_delete', currentTask, currentUserId, currentUserName, {

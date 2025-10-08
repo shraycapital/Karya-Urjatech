@@ -24,6 +24,8 @@ export default function RequestModal({
   const [errors, setErrors] = useState({});
   const [showAssignees, setShowAssignees] = useState(false);
   const [isUrgent, setIsUrgent] = useState(false); // Add urgent state
+  const [isRdNewSkill, setIsRdNewSkill] = useState(false); // Add R&D/New Skill state
+  const [projectSkillName, setProjectSkillName] = useState(''); // Add project/skill name state
   const [photos, setPhotos] = useState([]);
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
   
@@ -182,7 +184,9 @@ export default function RequestModal({
         requestingUserName: currentUser.name,
         points: DIFFICULTY_CONFIG[requestData.difficulty].points,
         photos: photos,
-        isUrgent: isUrgent // Include urgent state
+        isUrgent: isUrgent, // Include urgent state
+        isRdNewSkill: isRdNewSkill, // Include R&D/New Skill state
+        projectSkillName: isRdNewSkill ? projectSkillName : '' // Include project/skill name if R&D
       });
       onClose();
     } catch (error) {
@@ -330,6 +334,37 @@ export default function RequestModal({
                 {t('urgentTask') || 'Urgent Task'}
               </label>
             </div>
+
+            {/* R&D/New Skill Checkbox */}
+            <div className="flex items-center">
+              <input
+                type="checkbox"
+                id="isRdNewSkill"
+                checked={isRdNewSkill}
+                onChange={(e) => setIsRdNewSkill(e.target.checked)}
+                className="mr-2 h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+              />
+              <label htmlFor="isRdNewSkill" className="text-sm text-gray-700">
+                R&D/New Skill (5x EP, 100% LP)
+              </label>
+            </div>
+
+            {/* Project/Skill Name Field - Only show when R&D is selected */}
+            {isRdNewSkill && (
+              <div className="mt-2">
+                <label htmlFor="projectSkillName" className="block text-sm font-medium text-gray-700 mb-1">
+                  Project/Skill Name (Optional)
+                </label>
+                <input
+                  type="text"
+                  id="projectSkillName"
+                  value={projectSkillName}
+                  onChange={(e) => setProjectSkillName(e.target.value)}
+                  placeholder="Enter project or skill name..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                />
+              </div>
+            )}
 
             {/* Expected Delivery Date */}
             <div>

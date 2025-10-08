@@ -5,14 +5,19 @@ import { getUserLocationData, getUsersWithLocationData, getUsersLocationStats } 
 
 const getDateRange = (days) => {
   const endDate = new Date();
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - Number(days || 1));
+  if (days === 'all') {
+    return { startDate: new Date(0), endDate };
+  }
+
+  const parsedDays = Number(days || 1);
+  const startDate = new Date(endDate);
+  startDate.setDate(startDate.getDate() - parsedDays);
   return { startDate, endDate };
 };
 
 const LocationsTab = ({ currentUser, users, departments, t }) => {
   const [selectedUserId, setSelectedUserId] = useState('');
-  const [dateRange, setDateRange] = useState('7');
+  const [dateRange, setDateRange] = useState('all');
   const [availableUsers, setAvailableUsers] = useState([]);
   const [locationData, setLocationData] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -61,7 +66,7 @@ const LocationsTab = ({ currentUser, users, departments, t }) => {
         });
 
         const userIds = enhancedUsers.map(u => u.id);
-        const { startDate, endDate } = getDateRange('30');
+        const { startDate, endDate } = getDateRange('all');
         const stats = await getUsersLocationStats(userIds, startDate, endDate);
 
         setAvailableUsers(enhancedUsers);

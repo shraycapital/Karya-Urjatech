@@ -6,7 +6,7 @@ import { toISTISOString } from '../../../shared/utils/date.js';
 import { createTask } from '../../tasks/api/taskApi.js';
 import { createMaterialRequest } from '../../tasks/utils/materialRequest.js';
 
-export default function DepartmentDashboard({ users, tasks, allUsers, departments, currentUser, onUpdateTask, onLogActivity, t, deleteTask, allTasks, onDeleteComment, dashboardDeptId, setDashboardDeptId, isAdmin, isDeptHead, isManager }) {
+export default function DepartmentDashboard({ users, tasks, allUsers, departments, currentUser, onUpdateTask, onUpdateTaskLocal, onLogActivity, t, deleteTask, allTasks, onDeleteComment, dashboardDeptId, setDashboardDeptId, isAdmin, isDeptHead, isManager }) {
   const [selectedUserId, setSelectedUserId] = useState('all');
   const [selectedMonths, setSelectedMonths] = useState([]);
   const [isMonthFilterOpen, setIsMonthFilterOpen] = useState(false);
@@ -370,6 +370,7 @@ export default function DepartmentDashboard({ users, tasks, allUsers, department
         tasks={filteredTasks}
         allTasks={allTasks || tasks}
         onUpdateTask={onUpdateTask}
+        onUpdateTaskLocal={onUpdateTaskLocal}
         users={allUsers}
         departments={departments}
         t={t}

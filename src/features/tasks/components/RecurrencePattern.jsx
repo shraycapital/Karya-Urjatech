@@ -35,6 +35,7 @@ export default function RecurrencePattern({
   isScheduled, 
   onRecurrenceChange, 
   startDate, 
+  initialValue,
   t = (key) => key 
 }) {
   const [recurrenceType, setRecurrenceType] = useState(RECURRENCE_TYPES.DAILY);
@@ -48,6 +49,32 @@ export default function RecurrencePattern({
   const [rangeType, setRangeType] = useState(RANGE_TYPES.NO_END);
   const [endDate, setEndDate] = useState('');
   const [occurrences, setOccurrences] = useState(10);
+
+  // Initialize state with initialValue if provided
+  useEffect(() => {
+    if (initialValue) {
+      setRecurrenceType(initialValue.type || RECURRENCE_TYPES.DAILY);
+      setInterval(initialValue.interval || 1);
+      
+      if (initialValue.weekdays) {
+        setSelectedWeekdays(initialValue.weekdays);
+      }
+      
+      if (initialValue.monthlyType) {
+        setMonthlyType(initialValue.monthlyType);
+        setMonthlyDay(initialValue.monthlyDay || 1);
+        setMonthlyWeekday(initialValue.monthlyWeekday || 'last');
+        setMonthlyWeekdayName(initialValue.monthlyWeekdayName || 'friday');
+        setRegenerateAfter(initialValue.regenerateAfter || 1);
+      }
+      
+      if (initialValue.range) {
+        setRangeType(initialValue.range.type || RANGE_TYPES.NO_END);
+        setEndDate(initialValue.range.endDate || '');
+        setOccurrences(initialValue.range.occurrences || 10);
+      }
+    }
+  }, [initialValue]);
 
   // Update parent component when recurrence settings change
   useEffect(() => {

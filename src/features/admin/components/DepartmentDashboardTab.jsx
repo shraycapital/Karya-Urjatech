@@ -1,14 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ROLES } from '../../../shared/constants';
 import DepartmentDashboard from './DepartmentDashboard.jsx';
 import Section from '../../../shared/components/Section.jsx';
 
 function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onUpdateTask, onDeleteTask, onDeleteComment }) {
   const [dashboardDeptId, setDashboardDeptId] = useState('');
+  const [localTaskUpdates, setLocalTaskUpdates] = useState({});
   
   const isAdmin = currentUser.role === ROLES.ADMIN;
   const isDeptHead = currentUser.role === ROLES.HEAD;
   const isManager = currentUser.role === ROLES.MANAGEMENT;
+  
+  // Merge local task updates with the original tasks
+  const mergedTasks = useMemo(() => {
+    return (tasks || []).map(task => ({
+      ...task,
+      ...localTaskUpdates[task.id]
+    }));
+  }, [tasks, localTaskUpdates]);
+  
+  // Function to update task locally without database update (for progressive loading)
+  const handleUpdateTaskLocal = (patch) => {
+    setLocalTaskUpdates(prev => ({
+      ...prev,
+      [patch.id]: { ...prev[patch.id], ...patch }
+    }));
+  };
   
   // Get the department ID for the current user (only use departmentIds)
   const getUserDepartmentId = (user) => {
@@ -22,8 +39,8 @@ function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onU
   const viewingDept = departments.find((d) => d.id === viewingDeptId);
   
   const deptTasks = viewingDeptId === 'all' 
-    ? tasks 
-    : tasks.filter((t) => t.departmentId === viewingDeptId);
+    ? mergedTasks 
+    : mergedTasks.filter((t) => t.departmentId === viewingDeptId);
     
   const deptUsers = viewingDeptId === 'all' 
     ? users 
@@ -66,6 +83,7 @@ function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onU
           departments={departments}
           currentUser={currentUser}
           onUpdateTask={onUpdateTask}
+          onUpdateTaskLocal={handleUpdateTaskLocal}
           deleteTask={onDeleteTask}
           onDeleteComment={onDeleteComment}
           t={t}
@@ -74,6 +92,7 @@ function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onU
           isAdmin={isAdmin}
           isDeptHead={isDeptHead}
           isManager={isManager}
+          allTasks={mergedTasks}
         />
       </Section>
     </div>

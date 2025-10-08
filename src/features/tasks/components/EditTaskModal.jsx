@@ -28,6 +28,8 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
     departmentId: task.departmentId || '',
     notes: task.notes || [],
     isUrgent: task.isUrgent || false, // Add urgent state
+    isRdNewSkill: task.isRdNewSkill || false, // Add R&D/New Skill state
+    projectSkillName: task.projectSkillName || '', // Add project/skill name state
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -51,7 +53,9 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
       assignedUserIds: task.assignedUserIds || [],
       departmentId: task.departmentId || '',
       notes: task.notes || [],
-      isUrgent: task.isUrgent || false
+      isUrgent: task.isUrgent || false,
+      isRdNewSkill: task.isRdNewSkill || false,
+      projectSkillName: task.projectSkillName || ''
     });
     setPhotos(task.photos || []);
   }, [task]);
@@ -143,7 +147,9 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
           text: editedTask.description.trim(),
           type: 'edit',
           createdAt: toISTISOString(),
-          createdBy: currentUser.id
+          createdBy: currentUser.id,
+          editedBy: currentUser.id,
+          editedByName: currentUser.name
         });
       }
 
@@ -292,6 +298,37 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
               </label>
             </div>
 
+            {/* R&D/New Skill Checkbox */}
+            <div className="flex items-center">
+              <input
+                type="checkbox"
+                id="isRdNewSkill"
+                checked={editedTask.isRdNewSkill}
+                onChange={(e) => setEditedTask(prev => ({ ...prev, isRdNewSkill: e.target.checked }))}
+                className="mr-2 h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+              />
+              <label htmlFor="isRdNewSkill" className="text-sm text-gray-700">
+                R&D/New Skill (5x EP, 100% LP)
+              </label>
+            </div>
+
+            {/* Project/Skill Name Field - Only show when R&D is selected */}
+            {editedTask.isRdNewSkill && (
+              <div className="mt-2">
+                <label htmlFor="projectSkillName" className="block text-sm font-medium text-gray-700 mb-1">
+                  Project/Skill Name (Optional)
+                </label>
+                <input
+                  type="text"
+                  id="projectSkillName"
+                  value={editedTask.projectSkillName}
+                  onChange={(e) => setEditedTask(prev => ({ ...prev, projectSkillName: e.target.value }))}
+                  placeholder="Enter project or skill name..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                />
+              </div>
+            )}
+
             {/* Department Selection */}
             {(() => {
               const userDepartments = currentUser.departmentIds?.length > 1 
@@ -406,7 +443,10 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                   <div className="text-xs text-gray-600 mb-1">Previous notes:</div>
                   {task.notes.map((note, index) => (
                     <div key={index} className="text-xs text-gray-700 mb-1">
-                      • {note.text} ({note.type})
+                      • {note?.text || 'No text available'} ({note?.type || 'unknown'})
+                      {note?.editedByName && (
+                        <span className="text-gray-500 ml-1">- edited by {note?.editedByName}</span>
+                      )}
                     </div>
                   ))}
                 </div>
