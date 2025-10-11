@@ -9,10 +9,12 @@
 
 const {setGlobalOptions} = require("firebase-functions");
 const {onRequest} = require("firebase-functions/https");
+const {onObjectFinalized} = require("firebase-functions/v2/storage");
 const {onDocumentCreated, onDocumentUpdated} = require("firebase-functions/v2/firestore");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
+const csvParser = require('csv-parser');
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -562,5 +564,115 @@ exports.onTaskCompleted = onDocumentUpdated('tasks/{taskId}', async (event) => {
     } catch (error) {
       logger.error(`Error handling task completion for scheduled task:`, error);
     }
+  }
+});
+
+// Storage-triggered CSV import for large attendance files
+// Upload to gs://<bucket>/attendance_imports/<any>.csv
+exports.importAttendanceCsv = onObjectFinalized({ bucket: process.env.FUNCTIONS_EMULATOR ? undefined : undefined }, async (event) => {
+  const file = event.data;
+  const bucketName = file.bucket;
+  const name = file.name || '';
+
+  try {
+    // Only process files under attendance_imports/ and ending with .csv
+    if (!name.startsWith('attendance_imports/') || !name.toLowerCase().endsWith('.csv')) {
+      logger.info(`Skipping non-attendance file: ${name}`);
+      return;
+    }
+
+    const storage = admin.storage().bucket(bucketName);
+    const db = admin.firestore();
+    const bulkWriter = db.bulkWriter();
+    let processed = 0;
+    let skipped = 0;
+
+    await new Promise((resolve, reject) => {
+      storage.file(name)
+        .createReadStream()
+        .on('error', (err) => reject(err))
+        .pipe(csvParser())
+        .on('data', (row) => {
+          try {
+            // Normalize headers similar to UI importer
+            const employeeId = String(
+              row['imp_id'] || row['IMP. ID'] || row['EMP ID'] || row['EMPID'] || row['employeeId'] || row['Employee ID'] || row['Emp Id'] || row['EmpID'] || ''
+            ).trim();
+            const dateRaw = row['date'] || row['Date'] || row['DATE'] || '';
+            const inTime = String(row['in_time'] || row['In time'] || row['In Time'] || row['INTIME'] || row['IN'] || row['inTime'] || '').trim();
+            const outTime = String(row['out_time'] || row['Out time'] || row['Out Time'] || row['OUTTIME'] || row['OUT'] || row['outTime'] || '').trim();
+            const ot = row['ot_time'] || row['OT hours'] || row['OT Hours'] || row['OT'] || row['Overtime'] || row['otHours'] || '';
+
+            const toIsoDate = (x) => {
+              if (!x) return '';
+              const s = String(x).trim();
+              if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+              let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+              if (m) {
+                const d = m[1].padStart(2, '0');
+                const mo = m[2].padStart(2, '0');
+                const y = m[3].length === 2 ? `20${m[3]}` : m[3];
+                return `${y}-${mo}-${d}`;
+              }
+              m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/);
+              if (m) {
+                const d = m[1].padStart(2, '0');
+                const mo = m[2].padStart(2, '0');
+                const y = m[3].length === 2 ? `20${m[3]}` : m[3];
+                return `${y}-${mo}-${d}`;
+              }
+              return s;
+            };
+
+            const parseOt = (x) => {
+              if (typeof x === 'number') return x;
+              const s = String(x || '').trim();
+              if (!s) return 0;
+              const tm = s.match(/^(\d+):(\d+)$/);
+              if (tm) {
+                const h = parseInt(tm[1]);
+                const mi = parseInt(tm[2]);
+                return h + (mi / 60);
+              }
+              const num = parseFloat(s.replace(',', '.'));
+              return isNaN(num) ? 0 : num;
+            };
+
+            const date = toIsoDate(dateRaw);
+            if (!employeeId || !date) { skipped++; return; }
+
+            const docId = `${employeeId}_${date}`;
+            const ref = db.collection('attendance').doc(docId);
+            bulkWriter.set(ref, {
+              employeeId,
+              date,
+              inTime,
+              outTime,
+              otHours: parseOt(ot)
+            }, { merge: true });
+            processed++;
+          } catch (e) {
+            skipped++;
+          }
+        })
+        .on('end', async () => {
+          try {
+            await bulkWriter.close();
+            logger.info(`Attendance CSV imported: ${processed} processed, ${skipped} skipped (${name})`);
+            resolve();
+          } catch (e) {
+            reject(e);
+          }
+        });
+    });
+
+    // Optionally move file to processed/ folder
+    const dest = name.replace('attendance_imports/', 'attendance_imports/processed/');
+    await admin.storage().bucket(bucketName).file(name).move(dest);
+    logger.info(`Moved imported file to ${dest}`);
+
+  } catch (error) {
+    logger.error('Error importing attendance CSV:', error);
+    throw error;
   }
 });

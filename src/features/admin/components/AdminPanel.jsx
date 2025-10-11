@@ -129,7 +129,6 @@ function AdminPanel({
         />
       </div>
 
-
       {/* Activity Log Section - Admin only - Moved to end */}
       {canAccessFeature(currentUser?.role, 'activity-logs') && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -340,6 +339,7 @@ function EditableUserRow({ user, departments, onSave, onRemove, t }) {
       ...editedUser,
       name: editedUser.name.trim(),
       role: editedUser.role,
+      employeeId: editedUser.employeeId || '',
       departmentIds: editedUser.selectedDepartments || []
     };
     delete finalUser.selectedDepartments; // Remove temporary field
@@ -386,6 +386,13 @@ function EditableUserRow({ user, departments, onSave, onRemove, t }) {
           onChange={(e) => setEditedUser({ ...editedUser, password: e.target.value })}
           className="input"
           placeholder={t('password')}
+        />
+        <input
+          type="text"
+          value={editedUser.employeeId || ''}
+          onChange={(e) => setEditedUser({ ...editedUser, employeeId: e.target.value })}
+          className="input"
+          placeholder={t('employeeId') || 'Employee ID'}
         />
         <select
           value={editedUser.role || ROLES.USER}
@@ -453,6 +460,9 @@ function EditableUserRow({ user, departments, onSave, onRemove, t }) {
             </span>
           </div>
           <div className="text-sm text-slate-500">
+          {user.employeeId && (
+            <div className="text-xs text-slate-500">{(t('employeeId') || 'Employee ID')}: {user.employeeId}</div>
+          )}
             {userDeptNames.length > 0 ? (
               <div>
                 <span className="font-medium">{t('departments')}:</span>
@@ -495,6 +505,7 @@ function AddUserForm({ departments, onCreate, onCancel, t }) {
     password: '', 
     role: ROLES.USER, 
     email: '',
+    employeeId: '',
     selectedDepartments: []
   });
 
@@ -514,6 +525,7 @@ function AddUserForm({ departments, onCreate, onCancel, t }) {
       password: '', 
       role: ROLES.USER, 
       email: '',
+      employeeId: '',
       selectedDepartments: []
     });
   };
@@ -570,6 +582,13 @@ function AddUserForm({ departments, onCreate, onCancel, t }) {
           onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
           className="input"
           placeholder={t('email')}
+        />
+        <input
+          type="text"
+          value={newUser.employeeId}
+          onChange={(e) => setNewUser({ ...newUser, employeeId: e.target.value })}
+          className="input"
+          placeholder={t('employeeId') || 'Employee ID'}
         />
       </div>
       

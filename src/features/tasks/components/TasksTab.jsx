@@ -1026,10 +1026,10 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
               )}
             </div>
           )}
-          {/* Daily Points Progress Slider */}
+          {/* Today's Points Progress Slider */}
           <div className="mb-3 p-3 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-indigo-100">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-semibold text-slate-800">Daily progress</div>
+              <div className="text-sm font-semibold text-slate-800">Today's progress</div>
               {!isEditingTarget ? (
                 <div className="flex items-center gap-2 text-xs text-slate-600">
                   <span>{todayStats.points} / {sliderTarget} pts</span>

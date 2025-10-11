@@ -1,7 +1,51 @@
-import React from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { db } from '../../../firebase';
+import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 
-const AttendanceModal = ({ isOpen, onClose, t }) => {
+const AttendanceModal = ({ isOpen, onClose, t, currentUser, users }) => {
   if (!isOpen) return null;
+
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    return `${d.getFullYear()}-${m}`; // YYYY-MM
+  });
+  const [records, setRecords] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const employeeId = useMemo(() => {
+    return currentUser?.employeeId || users?.find(u => u.id === currentUser?.id)?.employeeId || '';
+  }, [currentUser, users]);
+
+  useEffect(() => {
+    if (!employeeId || !month) return;
+    const load = async () => {
+      setIsLoading(true);
+      setError('');
+      try {
+        // attendance collection model: one doc per day per employee
+        // fields: employeeId, date (YYYY-MM-DD), inTime, outTime, otHours (number)
+        const start = `${month}-01`;
+        const end = `${month}-31`;
+        const q = query(
+          collection(db, 'attendance'),
+          where('employeeId', '==', employeeId),
+          where('date', '>=', start),
+          where('date', '<=', end),
+        );
+        const snap = await getDocs(q);
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        rows.sort((a,b) => (a.date || '').localeCompare(b.date || ''));
+        setRecords(rows);
+      } catch (e) {
+        setError(e?.message || 'Failed to load attendance');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    load();
+  }, [employeeId, month]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -40,15 +84,56 @@ const AttendanceModal = ({ isOpen, onClose, t }) => {
             </svg>
           </div>
           
-          {/* Coming Soon Title */}
-          <h2 className="text-2xl font-bold text-slate-900 mb-3">
-            {t('attendanceComingSoon') || 'Attendance Coming Soon!'}
-          </h2>
-          
-          {/* Description */}
-          <p className="text-slate-600 mb-6 leading-relaxed">
-            {t('attendanceDescription') || 'We\'re working on an advanced attendance tracking system that will help you manage your work hours, track attendance, and view detailed reports.'}
-          </p>
+          <div className="mb-4">
+            <h2 className="text-2xl font-bold text-slate-900 mb-1">{t('attendance') || 'Attendance'}</h2>
+            <p className="text-xs text-slate-600">{employeeId ? `${t('employeeId') || 'Employee ID'}: ${employeeId}` : (t('noEmployeeIdConfigured') || 'No Employee ID configured for this user')}</p>
+          </div>
+
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <input
+              type="month"
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              className="input"
+            />
+          </div>
+
+          {isLoading && <div className="text-sm text-slate-600">{t('loading') || 'Loading...'}</div>}
+          {error && <div className="text-sm text-red-600">{error}</div>}
+
+          {(!isLoading && !error) && (
+            <div className="text-left bg-slate-50 rounded-lg p-4 mb-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-slate-500">
+                    <th className="text-left py-1">{t('date') || 'Date'}</th>
+                    <th className="text-left py-1">{t('inTime') || 'In'}</th>
+                    <th className="text-left py-1">{t('outTime') || 'Out'}</th>
+                    <th className="text-left py-1">{t('otHours') || 'OT (h)'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.map(r => (
+                    <tr key={r.id} className="border-t border-slate-200">
+                      <td className="py-1">{r.date}</td>
+                      <td className="py-1">{r.inTime || '-'}</td>
+                      <td className="py-1">{r.outTime || '-'}</td>
+                      <td className="py-1">{typeof r.otHours === 'number' ? r.otHours.toFixed(2) : r.otHours || '-'}</td>
+                    </tr>
+                  ))}
+                  {records.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="text-center text-slate-500 py-4">{t('noRecords') || 'No records for this month'}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {(!isLoading && !error) && (
+            <Summary records={records} t={t} />
+          )}
           
           {/* Features Preview */}
           <div className="text-left bg-slate-50 rounded-lg p-4 mb-6">
@@ -92,18 +177,8 @@ const AttendanceModal = ({ isOpen, onClose, t }) => {
             </div>
           </div>
           
-          {/* Call to Action */}
-          <div className="bg-blue-50 rounded-lg p-4">
-            <p className="text-sm text-blue-700 mb-2">
-              {t('attendanceCallToAction') || 'Stay tuned for updates on this exciting new feature!'}
-            </p>
-            <div className="flex items-center justify-center text-xs text-blue-600">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-1">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 6v6l4 2" />
-              </svg>
-              {t('attendanceStayTuned') || 'Coming soon to Karya!'}
-            </div>
+          <div className="bg-blue-50 rounded-lg p-4 text-sm text-blue-700">
+            {t('noteAttendanceSource') || 'Attendance data is loaded by Employee ID from CSV imports.'}
           </div>
         </div>
         
@@ -121,3 +196,29 @@ const AttendanceModal = ({ isOpen, onClose, t }) => {
 };
 
 export default AttendanceModal;
+
+function Summary({ records, t }) {
+  const totals = useMemo(() => {
+    let workingDays = 0;
+    let totalOt = 0;
+    for (const r of records) {
+      if (r.inTime || r.outTime) workingDays += 1;
+      const ot = typeof r.otHours === 'number' ? r.otHours : parseFloat(r.otHours || '0');
+      if (!isNaN(ot)) totalOt += ot;
+    }
+    return { workingDays, totalOt };
+  }, [records]);
+
+  return (
+    <div className="grid grid-cols-2 gap-2 mb-2">
+      <div className="p-3 rounded bg-white border">
+        <div className="text-xs text-slate-500">{t('totalWorkingDays') || 'Total Working Days'}</div>
+        <div className="text-xl font-semibold">{totals.workingDays}</div>
+      </div>
+      <div className="p-3 rounded bg-white border">
+        <div className="text-xs text-slate-500">{t('totalOtHours') || 'Total OT Hours'}</div>
+        <div className="text-xl font-semibold">{totals.totalOt.toFixed(2)}</div>
+      </div>
+    </div>
+  );
+}

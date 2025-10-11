@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
+import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { db, auth, enablePushNotifications, onForegroundMessage } from './firebase';
 import { collection, onSnapshot, doc, addDoc, updateDoc, deleteDoc, getDocs, serverTimestamp, arrayUnion } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
@@ -32,6 +33,7 @@ const ManagementSection = lazy(() => import('./features/admin/components/Managem
 const LocationsModal = lazy(() => import('./features/locations/components/LocationsModal.jsx'));
 const MarketTab = lazy(() => import('./features/market/components/MarketTab.jsx'));
 const AttendanceModal = lazy(() => import('./features/attendance/components/AttendanceModal.jsx'));
+const AttendancePage = lazy(() => import('./features/attendance/components/AttendancePage.jsx'));
 
 
 // ---------------------- SVG Icons ----------------------
@@ -95,7 +97,6 @@ function KaryaApp() {
   const [activeTab, setActiveTab] = useState('tasks'); // 'tasks', 'points', 'notifications'
   const [openTaskId, setOpenTaskId] = useState(null);
   const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
-  const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [showPushBanner, setShowPushBanner] = useState(false);
   const [taskFeedback, setTaskFeedback] = useState(null);
   const [isEnablingPush, setIsEnablingPush] = useState(false);
@@ -599,7 +600,12 @@ function KaryaApp() {
 
   // --- UI Setters ---
   const toggleAdminPanel = () => setAppState((s) => ({ ...s, isAdminPanelOpen: !s.isAdminPanelOpen }));
-  const toggleAttendanceModal = () => setIsAttendanceModalOpen(!isAttendanceModalOpen);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const toggleAttendanceModal = () => {
+    // Navigate to attendance page instead of opening modal
+    navigate('/attendance');
+  };
   
   const showTaskFeedback = (message, type = 'success') => {
     setTaskFeedback({ message, type, timestamp: Date.now() });
@@ -885,9 +891,26 @@ function KaryaApp() {
         refreshProgress={refreshProgress}
         pullDistance={pullDistance}
       />
-      <main className={`mx-auto p-3 ${activeTab === 'management' ? 'max-w-none px-4 lg:px-8' : 'max-w-md'}`}>
-        {/* Tab Content */}
-        {activeTab === 'tasks' && (
+      <Routes>
+        <Route path="/attendance" element={
+          <Suspense fallback={
+            <div className="flex items-center justify-center p-8">
+              <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading attendance...</p>
+            </div>
+          }>
+            <AttendancePage
+              currentUser={currentUser}
+              users={users}
+              t={t}
+              isAdmin={currentUser?.role === ROLES.ADMIN}
+            />
+          </Suspense>
+        } />
+        <Route path="/" element={
+          <main className={`mx-auto p-3 ${activeTab === 'management' ? 'max-w-none px-4 lg:px-8' : 'max-w-md'}`}>
+            {/* Tab Content */}
+            {activeTab === 'tasks' && (
           <Suspense fallback={
             <div className="space-y-4">
               {/* Daily Points Target Skeleton */}
@@ -1027,19 +1050,23 @@ function KaryaApp() {
         )}
         
 
-        
-        {/* Bottom spacing for tabs */}
-        <div className="h-20"></div>
-      </main>
+              
+              {/* Bottom spacing for tabs */}
+              {location.pathname !== '/attendance' && <div className="h-20"></div>}
+            </main>
+          } />
+      </Routes>
       
-      {/* Bottom Tabs */}
-      <Suspense fallback={
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 text-center">
-          <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-        </div>
-      }>
-        <BottomTabs activeTab={activeTab} setActiveTab={setActiveTab} t={t} currentUser={currentUser} />
-      </Suspense>
+      {/* Bottom Tabs - Hide on attendance page */}
+      {location.pathname !== '/attendance' && (
+        <Suspense fallback={
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 text-center">
+            <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          </div>
+        }>
+          <BottomTabs activeTab={activeTab} setActiveTab={setActiveTab} t={t} currentUser={currentUser} />
+        </Suspense>
+      )}
       
       {/* Task Feedback Notification */}
       {taskFeedback && (
@@ -1115,23 +1142,6 @@ function KaryaApp() {
         </Suspense>
       )}
 
-      {/* Attendance Modal */}
-      {isAttendanceModalOpen && (
-        <Suspense fallback={
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-8">
-              <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-gray-600">Loading attendance...</p>
-            </div>
-          </div>
-        }>
-          <AttendanceModal
-            isOpen={isAttendanceModalOpen}
-            onClose={() => setIsAttendanceModalOpen(false)}
-            t={t}
-          />
-        </Suspense>
-      )}
     </div>
     </LocationPermission>
   );
@@ -1139,4 +1149,12 @@ function KaryaApp() {
 
 // ---------------------- Child Components ----------------------
 
-export default KaryaApp;
+function App() {
+  return (
+    <Router>
+      <KaryaApp />
+    </Router>
+  );
+}
+
+export default App;
