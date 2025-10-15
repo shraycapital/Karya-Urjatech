@@ -567,6 +567,449 @@ exports.onTaskCompleted = onDocumentUpdated('tasks/{taskId}', async (event) => {
   }
 });
 
+// Weekly Leaderboard Reset Functions
+exports.weeklyLeaderboardReset = onSchedule({
+  schedule: '0 0 * * 1', // Every Monday at midnight
+  timeZone: 'Asia/Kolkata',
+  memory: '1GB',
+  timeoutSeconds: 540
+}, async (event) => {
+  const db = admin.firestore();
+  const logger = require('firebase-functions/logger');
+  
+  try {
+    logger.info('Starting weekly leaderboard reset...');
+    
+    // Check if reset is needed
+    const resetDoc = await db.collection('system').doc('weeklyReset').get();
+    const lastReset = resetDoc.exists ? resetDoc.data().lastReset : null;
+    
+    if (lastReset) {
+      const lastResetDate = lastReset.toDate();
+      const oneWeekAgo = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000));
+      
+      if (lastResetDate > oneWeekAgo) {
+        logger.info('Weekly reset not needed yet');
+        return { success: true, message: 'Reset not needed' };
+      }
+    }
+    
+    // Get current week's data for archiving
+    const usersSnapshot = await db.collection('users').get();
+    const tasksSnapshot = await db.collection('tasks').get();
+    
+    const users = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const tasks = tasksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    // Calculate current week's rankings
+    const currentWeekRankings = calculateCurrentWeekRankings(users, tasks);
+    
+    // Archive current week's data
+    const weekStart = getStartOfWeek();
+    const weekEnd = getEndOfWeek();
+    
+    const archiveData = {
+      weekStart: admin.firestore.Timestamp.fromDate(weekStart),
+      weekEnd: admin.firestore.Timestamp.fromDate(weekEnd),
+      archivedAt: admin.firestore.FieldValue.serverTimestamp(),
+      rankings: currentWeekRankings.map((user, index) => ({
+        userId: user.id,
+        userName: user.name,
+        executionPoints: user.executionPoints,
+        leadershipPoints: user.leadershipPoints,
+        bonusPoints: user.bonusPoints,
+        tcs: user.tcs,
+        completedTasks: user.completedTasks,
+        departmentId: user.departmentId,
+        rank: index + 1
+      })),
+      totalUsers: currentWeekRankings.length,
+      topPerformer: currentWeekRankings[0] || null,
+      topLeader: currentWeekRankings.find(u => u.leadershipPoints === Math.max(...currentWeekRankings.map(u => u.leadershipPoints))) || null
+    };
+    
+    // Store archive
+    await db.collection('weeklyLeaderboardArchives').add(archiveData);
+    
+    // Reset weekly scores for all users
+    const batch = db.batch();
+    const resetPromises = [];
+    
+    usersSnapshot.forEach(userDoc => {
+      const userRef = db.collection('users').doc(userDoc.id);
+      const userData = userDoc.data();
+      
+      // Store last week's rank before resetting
+      const currentRank = currentWeekRankings.findIndex(u => u.id === userDoc.id) + 1;
+      
+      batch.update(userRef, {
+        weeklyExecutionPoints: 0,
+        weeklyLeadershipPoints: 0,
+        weeklyBonusPoints: 0,
+        weeklyTCS: 0,
+        weeklyCompletedTasks: 0,
+        lastWeeklyReset: admin.firestore.FieldValue.serverTimestamp(),
+        weeklyRank: null,
+        weeklyRankLastWeek: currentRank || null
+      });
+    });
+    
+    // Commit the batch update
+    await batch.commit();
+    
+    // Update the global reset timestamp
+    const resetTimestampRef = db.collection('system').doc('weeklyReset');
+    await resetTimestampRef.set({
+      lastReset: admin.firestore.FieldValue.serverTimestamp(),
+      resetCount: admin.firestore.FieldValue.increment(1),
+      lastArchiveId: archiveData.archivedAt
+    }, { merge: true });
+    
+    // Send notification to all users
+    await sendPushNotificationToAll(
+      '🏆 Weekly Leaderboard Reset!',
+      'New week, new opportunities! Your weekly scores have been reset. Check the leaderboard to see last week\'s results.',
+      { type: 'weekly_reset', weekStart: weekStart.toISOString() }
+    );
+    
+    logger.info(`Weekly leaderboard reset completed. ${usersSnapshot.size} users reset.`);
+    
+    return { 
+      success: true, 
+      message: 'Weekly reset completed successfully',
+      usersReset: usersSnapshot.size,
+      archiveCreated: true
+    };
+    
+  } catch (error) {
+    logger.error('Error during weekly leaderboard reset:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Manual weekly reset function for admins
+exports.manualWeeklyReset = onRequest(async (request, response) => {
+  // Enhanced CORS support
+  response.set('Access-Control-Allow-Origin', '*');
+  response.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  response.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  response.set('Access-Control-Max-Age', '3600');
+
+  if (request.method === 'OPTIONS') {
+    response.status(204).send('');
+    return;
+  }
+
+  if (request.method !== 'POST') {
+    response.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  const db = admin.firestore();
+  const logger = require('firebase-functions/logger');
+  
+  try {
+    // Verify admin access (you might want to add proper authentication here)
+    const { adminUserId } = request.body;
+    
+    if (!adminUserId) {
+      response.status(400).json({ error: 'Admin user ID required' });
+      return;
+    }
+    
+    // Check if user is admin
+    const adminUser = await db.collection('users').doc(adminUserId).get();
+    if (!adminUser.exists || adminUser.data().role !== 'Admin') {
+      response.status(403).json({ error: 'Admin access required' });
+      return;
+    }
+    
+    logger.info(`Manual weekly reset initiated by admin: ${adminUserId}`);
+    
+    // Get current week's data for archiving
+    const usersSnapshot = await db.collection('users').get();
+    const tasksSnapshot = await db.collection('tasks').get();
+    
+    const users = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const tasks = tasksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    // Calculate current week's rankings
+    const currentWeekRankings = calculateCurrentWeekRankings(users, tasks);
+    
+    // Archive current week's data
+    const weekStart = getStartOfWeek();
+    const weekEnd = getEndOfWeek();
+    
+    const archiveData = {
+      weekStart: admin.firestore.Timestamp.fromDate(weekStart),
+      weekEnd: admin.firestore.Timestamp.fromDate(weekEnd),
+      archivedAt: admin.firestore.FieldValue.serverTimestamp(),
+      rankings: currentWeekRankings.map((user, index) => ({
+        userId: user.id,
+        userName: user.name,
+        executionPoints: user.executionPoints,
+        leadershipPoints: user.leadershipPoints,
+        bonusPoints: user.bonusPoints,
+        tcs: user.tcs,
+        completedTasks: user.completedTasks,
+        departmentId: user.departmentId,
+        rank: index + 1
+      })),
+      totalUsers: currentWeekRankings.length,
+      topPerformer: currentWeekRankings[0] || null,
+      topLeader: currentWeekRankings.find(u => u.leadershipPoints === Math.max(...currentWeekRankings.map(u => u.leadershipPoints))) || null,
+      manualReset: true,
+      resetBy: adminUserId
+    };
+    
+    // Store archive
+    const archiveRef = await db.collection('weeklyLeaderboardArchives').add(archiveData);
+    
+    // Reset weekly scores for all users
+    const batch = db.batch();
+    
+    usersSnapshot.forEach(userDoc => {
+      const userRef = db.collection('users').doc(userDoc.id);
+      const currentRank = currentWeekRankings.findIndex(u => u.id === userDoc.id) + 1;
+      
+      batch.update(userRef, {
+        weeklyExecutionPoints: 0,
+        weeklyLeadershipPoints: 0,
+        weeklyBonusPoints: 0,
+        weeklyTCS: 0,
+        weeklyCompletedTasks: 0,
+        lastWeeklyReset: admin.firestore.FieldValue.serverTimestamp(),
+        weeklyRank: null,
+        weeklyRankLastWeek: currentRank || null
+      });
+    });
+    
+    // Commit the batch update
+    await batch.commit();
+    
+    // Update the global reset timestamp
+    const resetTimestampRef = db.collection('system').doc('weeklyReset');
+    await resetTimestampRef.set({
+      lastReset: admin.firestore.FieldValue.serverTimestamp(),
+      resetCount: admin.firestore.FieldValue.increment(1),
+      lastArchiveId: archiveRef.id,
+      lastManualReset: admin.firestore.FieldValue.serverTimestamp(),
+      lastManualResetBy: adminUserId
+    }, { merge: true });
+    
+    // Send notification to all users
+    await sendPushNotificationToAll(
+      '🏆 Weekly Leaderboard Reset!',
+      'Admin has reset the weekly leaderboard. New week, new opportunities!',
+      { type: 'manual_weekly_reset', weekStart: weekStart.toISOString() }
+    );
+    
+    logger.info(`Manual weekly reset completed by admin ${adminUserId}. ${usersSnapshot.size} users reset.`);
+    
+    response.json({ 
+      success: true, 
+      message: 'Weekly reset completed successfully',
+      usersReset: usersSnapshot.size,
+      archiveId: archiveRef.id
+    });
+    
+  } catch (error) {
+    logger.error('Error during manual weekly reset:', error);
+    response.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Helper functions for weekly reset
+function getStartOfWeek() {
+  const now = new Date();
+  const startOfWeek = new Date(now);
+  const day = startOfWeek.getDay();
+  const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);
+  startOfWeek.setDate(diff);
+  startOfWeek.setHours(0, 0, 0, 0);
+  return startOfWeek;
+}
+
+function getEndOfWeek() {
+  const startOfWeek = getStartOfWeek();
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  endOfWeek.setHours(23, 59, 59, 999);
+  return endOfWeek;
+}
+
+function calculateCurrentWeekRankings(users, tasks) {
+  const startOfWeek = getStartOfWeek();
+  const endOfWeek = getEndOfWeek();
+  
+  return users.map(user => {
+    const userTasks = tasks.filter(task => {
+      return task.assignedUserIds &&
+             Array.isArray(task.assignedUserIds) &&
+             task.assignedUserIds.includes(user.id) &&
+             task.status === 'Complete';
+    });
+
+    const userBonusLedger = user?.dailyBonusLedger || {};
+    
+    // Calculate weekly Execution Points (EP)
+    const weeklyTasks = userTasks.filter(task => {
+      const completionDate = getTaskCompletionDate(task);
+      return completionDate && completionDate >= startOfWeek && completionDate <= endOfWeek;
+    });
+    const weeklyExecutionPoints = weeklyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+    
+    // Calculate weekly Leadership Points (LP)
+    const weeklyLeadershipData = calculateWeeklyLeadershipPoints(tasks, user.id, startOfWeek, endOfWeek);
+    const weeklyLeadershipPoints = weeklyLeadershipData.total;
+    
+    // Calculate weekly bonus points
+    const weeklyBonusPoints = getBonusPointsInRange(userBonusLedger, startOfWeek, endOfWeek);
+    
+    // Calculate weekly TCS
+    const weeklyTCS = weeklyExecutionPoints + weeklyLeadershipPoints + weeklyBonusPoints;
+
+    return {
+      id: user.id,
+      name: user.name || 'Unknown',
+      executionPoints: weeklyExecutionPoints,
+      leadershipPoints: weeklyLeadershipPoints,
+      bonusPoints: weeklyBonusPoints,
+      tcs: weeklyTCS,
+      completedTasks: weeklyTasks.length,
+      departmentId: user.departmentIds?.[0] || null,
+    };
+  }).sort((a, b) => b.tcs - a.tcs);
+}
+
+function getTaskCompletionDate(task) {
+  if (!task.completedAt) return null;
+  
+  if (task.completedAt.toDate) {
+    return task.completedAt.toDate();
+  } else if (task.completedAt instanceof Date) {
+    return task.completedAt;
+  } else if (typeof task.completedAt === 'string') {
+    return new Date(task.completedAt);
+  }
+  
+  return null;
+}
+
+function calculateTaskPoints(task) {
+  const difficultyPoints = {
+    'Easy': 10,
+    'Medium': 25,
+    'Hard': 50,
+    'Critical': 100
+  };
+  
+  let points = difficultyPoints[task.difficulty] || 0;
+  
+  // Team collaboration bonus
+  if (task.assignedUserIds && task.assignedUserIds.length > 1) {
+    points = Math.round(points * 1.1);
+  }
+  
+  // Urgent task bonus
+  if (task.isUrgent) {
+    points = Math.round(points * 1.25);
+  }
+  
+  // On-time completion bonus
+  if (task.targetDate && task.completedAt) {
+    const targetDate = task.targetDate.toDate ? task.targetDate.toDate() : new Date(task.targetDate);
+    const completedDate = getTaskCompletionDate(task);
+    
+    if (completedDate && completedDate <= targetDate) {
+      points += 3;
+    }
+  }
+  
+  return points;
+}
+
+function calculateWeeklyLeadershipPoints(tasks, managerId, startOfWeek, endOfWeek) {
+  const managerTasks = tasks.filter(task => 
+    task.assignedById === managerId && 
+    task.status === 'Complete'
+  );
+
+  let totalLP = 0;
+  let tasksAwarded = 0;
+
+  managerTasks.forEach(task => {
+    const completionDate = getTaskCompletionDate(task);
+    if (completionDate && completionDate >= startOfWeek && completionDate <= endOfWeek) {
+      const taskPoints = calculateTaskPoints(task);
+      const lpData = calculateLeadershipPoints(task, taskPoints);
+      totalLP += lpData.total;
+      tasksAwarded++;
+    }
+  });
+
+  return {
+    total: totalLP,
+    tasksAwarded
+  };
+}
+
+function calculateLeadershipPoints(task, taskExecutionPoints) {
+  if (!task || !taskExecutionPoints) {
+    return { completionBonus: 0, difficultyFairness: 0, onTimeBonus: 0, total: 0 };
+  }
+
+  let completionBonus = 0;
+  let difficultyFairness = 0;
+  let onTimeBonus = 0;
+
+  const isRdNewSkill = task.isRdNewSkill || false;
+
+  // Completion Bonus
+  if (isRdNewSkill) {
+    completionBonus = taskExecutionPoints;
+  } else {
+    completionBonus = Math.round(taskExecutionPoints * 0.10);
+  }
+
+  // Difficulty Fairness (only for regular tasks)
+  if (!isRdNewSkill) {
+    difficultyFairness = Math.round(taskExecutionPoints * 0.05);
+  }
+
+  // On-Time Delivery Bonus
+  if (task.targetDate && task.completedAt) {
+    const targetDate = task.targetDate.toDate ? task.targetDate.toDate() : new Date(task.targetDate);
+    const completedDate = getTaskCompletionDate(task);
+    
+    if (completedDate && completedDate <= targetDate) {
+      onTimeBonus = Math.round(taskExecutionPoints * 0.05);
+    }
+  }
+
+  return {
+    completionBonus,
+    difficultyFairness,
+    onTimeBonus,
+    total: completionBonus + difficultyFairness + onTimeBonus
+  };
+}
+
+function getBonusPointsInRange(bonusLedger, startDate, endDate) {
+  let total = 0;
+  
+  Object.values(bonusLedger).forEach(entry => {
+    if (entry.date && entry.points) {
+      const entryDate = entry.date.toDate ? entry.date.toDate() : new Date(entry.date);
+      if (entryDate >= startDate && entryDate <= endDate) {
+        total += entry.points;
+      }
+    }
+  });
+  
+  return total;
+}
+
 // Storage-triggered CSV import for large attendance files
 // Upload to gs://<bucket>/attendance_imports/<any>.csv
 exports.importAttendanceCsv = onObjectFinalized({ bucket: process.env.FUNCTIONS_EMULATOR ? undefined : undefined }, async (event) => {

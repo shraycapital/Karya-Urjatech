@@ -3,10 +3,79 @@ import { STATUSES, DIFFICULTY_CONFIG, ROLES } from '../../../shared/constants';
 import Section from '../../../shared/components/Section';
 import { getBonusClaimsInRange, getBonusPointsInRange, getPointsFromEntry, getTotalBonusPoints } from '../../../shared/utils/dailyBonus.js';
 import { calculateTotalLeadershipPoints, calculateTCS, getLPBreakdownDisplay } from '../../../shared/utils/leadershipPoints.js';
+import { getStartOfWeek, getEndOfWeek } from '../../../shared/utils/weeklyReset.js';
 
 
 function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   const [leaderboardView, setLeaderboardView] = useState('overall'); // Default to TCS Overall view
+
+  // Helper function to calculate weekly leadership points
+  const calculateWeeklyLeadershipPoints = (tasks, managerId, startOfWeek, endOfWeek) => {
+    const managerTasks = tasks.filter(task => 
+      task.assignedById === managerId && 
+      task.status === STATUSES.COMPLETE
+    );
+
+    let totalLP = 0;
+    let tasksAwarded = 0;
+
+    managerTasks.forEach(task => {
+      const completionDate = getTaskCompletionDate(task);
+      if (completionDate && completionDate >= startOfWeek && completionDate <= endOfWeek) {
+        const taskPoints = calculateTaskPoints(task);
+        const lpData = calculateLeadershipPointsForTask(task, taskPoints);
+        totalLP += lpData.total;
+        tasksAwarded++;
+      }
+    });
+
+    return {
+      total: totalLP,
+      tasksAwarded
+    };
+  };
+
+  // Helper function to calculate leadership points for a single task
+  const calculateLeadershipPointsForTask = (task, taskExecutionPoints) => {
+    if (!task || !taskExecutionPoints) {
+      return { completionBonus: 0, difficultyFairness: 0, onTimeBonus: 0, total: 0 };
+    }
+
+    let completionBonus = 0;
+    let difficultyFairness = 0;
+    let onTimeBonus = 0;
+
+    const isRdNewSkill = task.isRdNewSkill || false;
+
+    // Completion Bonus
+    if (isRdNewSkill) {
+      completionBonus = taskExecutionPoints;
+    } else {
+      completionBonus = Math.round(taskExecutionPoints * 0.10);
+    }
+
+    // Difficulty Fairness (only for regular tasks)
+    if (!isRdNewSkill) {
+      difficultyFairness = Math.round(taskExecutionPoints * 0.05);
+    }
+
+    // On-Time Delivery Bonus
+    if (task.targetDate && task.completedAt) {
+      const targetDate = getTaskCompletionDate(task.targetDate);
+      const completedDate = getTaskCompletionDate(task.completedAt);
+      
+      if (targetDate && completedDate && completedDate <= targetDate) {
+        onTimeBonus = Math.round(taskExecutionPoints * 0.05);
+      }
+    }
+
+    return {
+      completionBonus,
+      difficultyFairness,
+      onTimeBonus,
+      total: completionBonus + difficultyFairness + onTimeBonus
+    };
+  };
 
   // Safety checks
   if (!currentUser || !tasks || !users) {
@@ -240,16 +309,8 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
   // Calculate this week's points (Monday to Sunday)
   const weeklyStats = useMemo(() => {
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    const day = startOfWeek.getDay();
-    const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1); // Monday as start
-    startOfWeek.setDate(diff);
-    startOfWeek.setHours(0, 0, 0, 0);
-    
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
+    const startOfWeek = getStartOfWeek();
+    const endOfWeek = getEndOfWeek();
 
     const weeklyTasks = userCompletedTasks.filter(task => {
       const completionDate = getTaskCompletionDate(task);
@@ -292,16 +353,8 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
   // Calculate weekly breakdown by difficulty
   const weeklyBreakdown = useMemo(() => {
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    const day = startOfWeek.getDay();
-    const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1); // Monday as start
-    startOfWeek.setDate(diff);
-    startOfWeek.setHours(0, 0, 0, 0);
-    
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
+    const startOfWeek = getStartOfWeek();
+    const endOfWeek = getEndOfWeek();
 
     const thisWeekTasks = userCompletedTasks.filter(task => {
       const completionDate = getTaskCompletionDate(task);
@@ -334,23 +387,10 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
     return breakdown;
   }, [userCompletedTasks, currentUserBonusLedger]);
 
-  // Calculate all users' rankings with robust date handling
-  const userRankings = useMemo(() => {
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    const day = startOfWeek.getDay();
-    const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);
-    startOfWeek.setDate(diff);
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
-
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    startOfMonth.setHours(0, 0, 0, 0);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    endOfMonth.setHours(23, 59, 59, 999);
+  // Calculate weekly rankings (replacing overall leaderboard)
+  const weeklyRankings = useMemo(() => {
+    const startOfWeek = getStartOfWeek();
+    const endOfWeek = getEndOfWeek();
 
     return users.map(user => {
       const userTasks = tasks.filter(task => {
@@ -366,43 +406,30 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
       const userBonusLedger = user?.dailyBonusLedger || {};
       
-      // Calculate Execution Points (EP)
-      const executionPoints = userTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
-      const totalBonus = getTotalBonusPoints(userBonusLedger);
-      
-      // Calculate Leadership Points (LP)
-      const leadershipData = calculateTotalLeadershipPoints(tasks, user.id, calculateTaskPoints);
-      const leadershipPoints = leadershipData.total;
-      
-      // Calculate Total Contribution Score (TCS)
-      const tcs = calculateTCS(executionPoints, leadershipPoints, totalBonus, 0);
-
+      // Calculate weekly Execution Points (EP)
       const weeklyTasks = userTasks.filter(task => {
         const completionDate = getTaskCompletionDate(task);
         return completionDate && completionDate >= startOfWeek && completionDate <= endOfWeek;
       });
-      const weekTaskPoints = weeklyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
-      const weekBonusPoints = getBonusPointsInRange(userBonusLedger, startOfWeek, endOfWeek);
-
-      const monthlyTasksUser = userTasks.filter(task => {
-        const completionDate = getTaskCompletionDate(task);
-        return completionDate && completionDate >= startOfMonth && completionDate <= endOfMonth;
-      });
-      const monthTaskPoints = monthlyTasksUser.reduce((total, task) => total + calculateTaskPoints(task), 0);
-      const monthBonusPoints = getBonusPointsInRange(userBonusLedger, startOfMonth, endOfMonth);
+      const weeklyExecutionPoints = weeklyTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+      const weeklyBonusPoints = getBonusPointsInRange(userBonusLedger, startOfWeek, endOfWeek);
+      
+      // Calculate weekly Leadership Points (LP)
+      const weeklyLeadershipData = calculateWeeklyLeadershipPoints(tasks, user.id, startOfWeek, endOfWeek);
+      const weeklyLeadershipPoints = weeklyLeadershipData.total;
+      
+      // Calculate weekly Total Contribution Score (TCS)
+      const weeklyTCS = weeklyExecutionPoints + weeklyLeadershipPoints + weeklyBonusPoints;
 
       return {
         id: user.id,
         name: user.name || 'Unknown',
-        executionPoints,
-        leadershipPoints,
-        bonusPoints: totalBonus,
-        tcs,
-        totalPoints: tcs, // Use TCS as total points for backward compatibility
-        weekPoints: weekTaskPoints + weekBonusPoints,
-        monthPoints: monthTaskPoints + monthBonusPoints,
-        completedTasks: userTasks.length,
-        weeklyTasks: weeklyTasks.length,
+        executionPoints: weeklyExecutionPoints,
+        leadershipPoints: weeklyLeadershipPoints,
+        bonusPoints: weeklyBonusPoints,
+        tcs: weeklyTCS,
+        totalPoints: weeklyTCS, // Use weekly TCS as total points
+        completedTasks: weeklyTasks.length,
         departmentId: user.departmentIds?.[0] || null,
       };
     }).sort((a, b) => {
@@ -417,13 +444,59 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
     });
   }, [users, tasks, leaderboardView]);
 
-  // Get top 10 performers, include those with 0 points
-  const topPerformers = userRankings.slice(0, 10);
+  // Calculate department rankings (monthly)
+  const departmentRankings = useMemo(() => {
+    const startOfMonth = new Date();
+    startOfMonth.setMonth(startOfMonth.getMonth());
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const endOfMonth = new Date(startOfMonth.getFullYear(), startOfMonth.getMonth() + 1, 0);
+    endOfMonth.setHours(23, 59, 59, 999);
 
-  // Calculate user's rank based on current view
+    return departments.map(dept => {
+      const deptUsers = users.filter(user => user.departmentIds?.includes(dept.id));
+      const deptUserIds = deptUsers.map(u => u.id);
+      
+      const deptTasks = tasks.filter(task => {
+        if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+          return false;
+        }
+        return task.assignedUserIds && 
+               Array.isArray(task.assignedUserIds) && 
+               task.assignedUserIds.some(id => deptUserIds.includes(id)) &&
+               task.status === STATUSES.COMPLETE;
+      });
+
+      const monthTasks = deptTasks.filter(task => {
+        const completionDate = getTaskCompletionDate(task);
+        return completionDate && completionDate >= startOfMonth && completionDate <= endOfMonth;
+      });
+
+      const monthPoints = monthTasks.reduce((total, task) => total + calculateTaskPoints(task), 0);
+      const monthBonusPoints = deptUsers.reduce((total, user) => {
+        const userBonusLedger = user?.dailyBonusLedger || {};
+        return total + getBonusPointsInRange(userBonusLedger, startOfMonth, endOfMonth);
+      }, 0);
+
+      return {
+        id: dept.id,
+        name: dept.name,
+        monthPoints: monthPoints + monthBonusPoints,
+        taskCount: monthTasks.length,
+        userCount: deptUsers.length,
+        avgPointsPerUser: deptUsers.length > 0 ? (monthPoints + monthBonusPoints) / deptUsers.length : 0
+      };
+    }).sort((a, b) => b.monthPoints - a.monthPoints);
+  }, [departments, users, tasks, currentUser.role]);
+
+  // Get top 10 performers from weekly rankings
+  const topPerformers = weeklyRankings.slice(0, 10);
+
+
+  // Calculate user's rank based on current view (using weekly rankings)
   const currentUserRank = useMemo(() => {
     // Create a sorted array based on the current leaderboard view
-    const sortedRankings = [...userRankings].sort((a, b) => {
+    const sortedRankings = [...weeklyRankings].sort((a, b) => {
       if (leaderboardView === 'topPerformers') {
         return b.executionPoints - a.executionPoints;
       } else if (leaderboardView === 'topLeaders') {
@@ -433,88 +506,8 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       }
     });
     return sortedRankings.findIndex(user => user.id === currentUser.id) + 1;
-  }, [userRankings, currentUser.id, leaderboardView]);
+  }, [weeklyRankings, currentUser.id, leaderboardView]);
 
-  // Calculate department rankings (rebuild from tasks to ensure coverage across all depts)
-  const departmentRankings = useMemo(() => {
-    const deptStats = {};
-
-    const ensureDept = (deptId) => {
-      const dept = departments?.find(d => d.id === deptId);
-      if (!deptStats[deptId]) {
-        deptStats[deptId] = {
-          id: deptId || 'unassigned',
-          name: dept?.name || (deptId ? String(deptId) : 'Unassigned'),
-          totalPoints: 0,
-          monthPoints: 0,
-          totalUsers: 0,
-          totalTasks: 0,
-          userIds: new Set(),
-        };
-      }
-      return deptStats[deptId];
-    };
-
-    const completedTasksAllTime = tasks.filter(t => {
-      if (t.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
-        return false;
-      }
-      return t.status === STATUSES.COMPLETE;
-    });
-
-    completedTasksAllTime.forEach(task => {
-      const dId = task.departmentId || 'unassigned';
-      const dept = ensureDept(dId);
-      dept.totalPoints += calculateTaskPoints(task);
-      dept.totalTasks += 1;
-      if (Array.isArray(task.assignedUserIds)) {
-        task.assignedUserIds.forEach(uid => dept.userIds.add(uid));
-      }
-    });
-
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    startOfMonth.setHours(0, 0, 0, 0);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    endOfMonth.setHours(23, 59, 59, 999);
-
-    const completedThisMonth = completedTasksAllTime.filter(task => {
-      const completionDate = getTaskCompletionDate(task);
-      if (!completionDate) return false;
-      return completionDate >= startOfMonth && completionDate <= endOfMonth;
-    });
-
-    completedThisMonth.forEach(task => {
-      const dId = task.departmentId || 'unassigned';
-      const dept = ensureDept(dId);
-      dept.monthPoints += calculateTaskPoints(task);
-    });
-
-    users.forEach(user => {
-      const deptId = user?.departmentIds?.[0] || 'unassigned';
-      const dept = ensureDept(deptId);
-      const userBonusLedger = user?.dailyBonusLedger || {};
-      const totalBonus = getTotalBonusPoints(userBonusLedger);
-      if (totalBonus > 0) {
-        dept.totalPoints += totalBonus;
-        const monthlyBonus = getBonusPointsInRange(userBonusLedger, startOfMonth, endOfMonth);
-        dept.monthPoints += monthlyBonus;
-        if (user?.id) {
-          dept.userIds.add(user.id);
-        }
-      }
-    });
-
-    const finalized = Object.values(deptStats).map(d => ({
-      ...d,
-      totalUsers: d.userIds.size,
-    })).sort((a, b) => {
-      if (b.monthPoints !== a.monthPoints) return b.monthPoints - a.monthPoints;
-      return b.totalPoints - a.totalPoints;
-    });
-
-    return finalized;
-  }, [departments, tasks, users]);
 
   return (
     <div className="space-y-4 pb-20">
@@ -665,7 +658,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
         </div>
       </Section>
 
-      <Section title={t('leaderboard')}>
+      <Section title="📅 Leaderboard">
         <div className="text-center text-lg mb-4">
           Your Rank: <span className="font-bold text-brand-600">#{currentUserRank}</span>
         </div>
@@ -673,7 +666,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
           {currentUserRank === 1 
             ? leaderboardView === 'topPerformers' ? '⚡ Top EP Performer!' 
               : leaderboardView === 'topLeaders' ? '🎯 Top LP Leader!' 
-              : '🏆 You are the leader!' 
+              : '🏆 Leader!' 
             : 'Keep going! You are doing great!'}
         </div>
         
@@ -690,7 +683,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                ⚡ EP Leaders
+                ⚡ EP
               </button>
               <button
                 onClick={() => setLeaderboardView('topLeaders')}
@@ -700,7 +693,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                🎯 LP Leaders
+                🎯 LP
               </button>
               <button
                 onClick={() => setLeaderboardView('overall')}
@@ -710,7 +703,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-                🏆 TCS Overall
+                🏆 TCS
             </button>
             <button
               onClick={() => setLeaderboardView('departments')}
@@ -730,9 +723,9 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
         {leaderboardView === 'topPerformers' && (
           <div>
             <div className="flex items-center justify-between mb-3">
-              <h4 className="font-medium text-slate-700">⚡ Top Execution Points (EP)</h4>
+              <h4 className="font-medium text-slate-700">⚡ Execution Points (EP)</h4>
               <div className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
-                Completed Tasks
+                This Week
               </div>
             </div>
             <div className="space-y-2">
@@ -785,7 +778,10 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
         {leaderboardView === 'topLeaders' && (
           <div>
             <div className="flex items-center justify-between mb-3">
-              <h4 className="font-medium text-slate-700">🎯 Top Leadership Points (LP)</h4>
+              <h4 className="font-medium text-slate-700">🎯 Leadership Points (LP)</h4>
+              <div className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
+                This Week
+              </div>
             </div>
             <div className="space-y-2">
               {topPerformers.length > 0 ? (
@@ -839,7 +835,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-medium text-slate-700">🏆 Total Contribution Score (TCS)</h4>
               <div className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
-                EP + LP + Bonuses
+                This Week
               </div>
             </div>
             <div className="space-y-2">
@@ -935,6 +931,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
           </div>
         )}
       </Section>
+
 
       {/* Removed bottom Stats section for a cleaner Points tab */}
     </div>
