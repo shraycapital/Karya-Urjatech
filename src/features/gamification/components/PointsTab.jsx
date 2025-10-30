@@ -9,6 +9,13 @@ import { getStartOfWeek, getEndOfWeek } from '../../../shared/utils/weeklyReset.
 function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   const [leaderboardView, setLeaderboardView] = useState('overall'); // Default to TCS Overall view
 
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
+  const safeUsers = Array.isArray(users) ? users : [];
+  const safeDepartments = Array.isArray(departments) ? departments : [];
+  const userId = currentUser?.id ?? null;
+  const userRole = currentUser?.role ?? ROLES.USER;
+  const isDataReady = Boolean(currentUser) && Array.isArray(tasks) && Array.isArray(users);
+
   // Helper function to calculate weekly leadership points
   const calculateWeeklyLeadershipPoints = (tasks, managerId, startOfWeek, endOfWeek) => {
     const managerTasks = tasks.filter(task => 
@@ -76,19 +83,6 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       total: completionBonus + difficultyFairness + onTimeBonus
     };
   };
-
-  // Safety checks
-  if (!currentUser || !tasks || !users) {
-    return (
-      <div className="space-y-4 pb-20">
-        <Section title={t('points')}>
-          <div className="text-center text-slate-500 py-8">
-            {t('loading') || 'Loading...'}
-          </div>
-        </Section>
-      </div>
-    );
-  }
 
   // Simplified date parsing for Firestore Timestamps
   const parseDate = (dateValue) => {
@@ -170,15 +164,15 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   };
 
   // Calculate user's completed tasks and points (excluding deleted tasks for non-admins)
-  const userCompletedTasks = tasks.filter(task => {
+  const userCompletedTasks = safeTasks.filter(task => {
+    if (!userId) return false;
     // Hide deleted tasks from regular users (only admins can see them)
-    if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+    if (task.status === STATUSES.DELETED && userRole !== ROLES.ADMIN) {
       return false;
     }
     
-    return task.assignedUserIds && 
-           Array.isArray(task.assignedUserIds) && 
-           task.assignedUserIds.includes(currentUser.id) && 
+    return Array.isArray(task.assignedUserIds) && 
+           task.assignedUserIds.includes(userId) && 
            task.status === STATUSES.COMPLETE;
   });
 
@@ -192,8 +186,17 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
   // Calculate Leadership Points (LP) - points from tasks assigned by user
   const userLeadershipData = useMemo(() => {
-    return calculateTotalLeadershipPoints(tasks, currentUser.id, calculateTaskPoints);
-  }, [tasks, currentUser.id]);
+    if (!userId) {
+      return {
+        total: 0,
+        completionBonus: 0,
+        difficultyFairness: 0,
+        onTimeBonus: 0,
+        tasksAwarded: 0,
+      };
+    }
+    return calculateTotalLeadershipPoints(safeTasks, userId, calculateTaskPoints);
+  }, [safeTasks, userId]);
 
   const userLeadershipPoints = userLeadershipData.total;
 
@@ -227,16 +230,16 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
   const pointsRemaining = Math.max(0, dailyPointsTarget - todayStats.points);
 
   const easyPendingCount = useMemo(() => {
-    if (!Array.isArray(tasks) || !currentUser?.id) {
+    if (!userId) {
       return 0;
     }
 
     const easyKey = 'easy';
     const easyPoints = DIFFICULTY_CONFIG[easyKey]?.points || 0;
 
-    return tasks.filter(task => {
+    return safeTasks.filter(task => {
       if (!task || !Array.isArray(task.assignedUserIds)) return false;
-      if (!task.assignedUserIds.includes(currentUser.id)) return false;
+      if (!task.assignedUserIds.includes(userId)) return false;
       if (task.status === STATUSES.COMPLETE || task.status === STATUSES.DELETED) return false;
 
       const difficultyKey = typeof task.difficulty === 'string' ? task.difficulty.toLowerCase() : '';
@@ -250,12 +253,12 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
       return false;
     }).length;
-  }, [tasks, currentUser?.id]);
+  }, [safeTasks, userId]);
 
   const calloutStorageKey = useMemo(() => {
-    if (!currentUser?.id) return null;
-    return `pointsTab.calloutDismissed.${currentUser.id}`;
-  }, [currentUser?.id]);
+    if (!userId) return null;
+    return `pointsTab.calloutDismissed.${userId}`;
+  }, [userId]);
 
   const [calloutDismissedToday, setCalloutDismissedToday] = useState(false);
 
@@ -392,14 +395,13 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
     const startOfWeek = getStartOfWeek();
     const endOfWeek = getEndOfWeek();
 
-    return users.map(user => {
-      const userTasks = tasks.filter(task => {
-        if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+    return safeUsers.map(user => {
+      const userTasks = safeTasks.filter(task => {
+        if (task.status === STATUSES.DELETED && userRole !== ROLES.ADMIN) {
           return false;
         }
 
-        return task.assignedUserIds &&
-               Array.isArray(task.assignedUserIds) &&
+        return Array.isArray(task.assignedUserIds) &&
                task.assignedUserIds.includes(user.id) &&
                task.status === STATUSES.COMPLETE;
       });
@@ -415,7 +417,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
       const weeklyBonusPoints = getBonusPointsInRange(userBonusLedger, startOfWeek, endOfWeek);
       
       // Calculate weekly Leadership Points (LP)
-      const weeklyLeadershipData = calculateWeeklyLeadershipPoints(tasks, user.id, startOfWeek, endOfWeek);
+      const weeklyLeadershipData = calculateWeeklyLeadershipPoints(safeTasks, user.id, startOfWeek, endOfWeek);
       const weeklyLeadershipPoints = weeklyLeadershipData.total;
       
       // Calculate weekly Total Contribution Score (TCS)
@@ -442,7 +444,7 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
         return b.tcs - a.tcs;
       }
     });
-  }, [users, tasks, leaderboardView]);
+  }, [safeUsers, safeTasks, leaderboardView, userRole]);
 
   // Calculate department rankings (monthly)
   const departmentRankings = useMemo(() => {
@@ -453,16 +455,15 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
     const endOfMonth = new Date(startOfMonth.getFullYear(), startOfMonth.getMonth() + 1, 0);
     endOfMonth.setHours(23, 59, 59, 999);
 
-    return departments.map(dept => {
-      const deptUsers = users.filter(user => user.departmentIds?.includes(dept.id));
+    return safeDepartments.map(dept => {
+      const deptUsers = safeUsers.filter(user => Array.isArray(user.departmentIds) && user.departmentIds.includes(dept.id));
       const deptUserIds = deptUsers.map(u => u.id);
       
-      const deptTasks = tasks.filter(task => {
-        if (task.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+      const deptTasks = safeTasks.filter(task => {
+        if (task.status === STATUSES.DELETED && userRole !== ROLES.ADMIN) {
           return false;
         }
-        return task.assignedUserIds && 
-               Array.isArray(task.assignedUserIds) && 
+        return Array.isArray(task.assignedUserIds) && 
                task.assignedUserIds.some(id => deptUserIds.includes(id)) &&
                task.status === STATUSES.COMPLETE;
       });
@@ -478,16 +479,18 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
         return total + getBonusPointsInRange(userBonusLedger, startOfMonth, endOfMonth);
       }, 0);
 
+      const totalPoints = monthPoints + monthBonusPoints;
+
       return {
         id: dept.id,
         name: dept.name,
-        monthPoints: monthPoints + monthBonusPoints,
+        monthPoints: totalPoints,
         taskCount: monthTasks.length,
         userCount: deptUsers.length,
-        avgPointsPerUser: deptUsers.length > 0 ? (monthPoints + monthBonusPoints) / deptUsers.length : 0
+        avgPointsPerUser: deptUsers.length > 0 ? totalPoints / deptUsers.length : 0
       };
     }).sort((a, b) => b.monthPoints - a.monthPoints);
-  }, [departments, users, tasks, currentUser.role]);
+  }, [safeDepartments, safeUsers, safeTasks, userRole]);
 
   // Get top 10 performers from weekly rankings
   const topPerformers = weeklyRankings.slice(0, 10);
@@ -505,8 +508,20 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
         return b.tcs - a.tcs;
       }
     });
-    return sortedRankings.findIndex(user => user.id === currentUser.id) + 1;
-  }, [weeklyRankings, currentUser.id, leaderboardView]);
+    return sortedRankings.findIndex(user => user.id === userId) + 1;
+  }, [weeklyRankings, userId, leaderboardView]);
+
+  if (!isDataReady) {
+    return (
+      <div className="space-y-4 pb-20">
+        <Section title={t('points')}>
+          <div className="text-center text-slate-500 py-8">
+            {t('loading') || 'Loading...'}
+          </div>
+        </Section>
+      </div>
+    );
+  }
 
 
   return (
@@ -909,14 +924,14 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
                       <div>
                         <div className="font-medium text-slate-700">{dept.name}</div>
                         <div className="text-xs text-slate-500">
-                          {dept.totalUsers} users • {dept.totalTasks} tasks
+                          {dept.userCount} users • {dept.taskCount} tasks
                         </div>
                       </div>
                     </div>
                     <div className="text-right">
                       <div className="font-bold text-slate-700">{dept.monthPoints}</div>
                       <div className="text-xs text-slate-500">month points</div>
-                      <div className="text-xs text-slate-400">({dept.totalPoints} total)</div>
+                      <div className="text-xs text-slate-400">avg {dept.avgPointsPerUser.toFixed(1)} / user</div>
                     </div>
                   </div>
                 ))

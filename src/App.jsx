@@ -398,7 +398,10 @@ function KaryaApp() {
     );
   }, [currentUser]);
 
-  useLocationTracking(currentUser?.id, currentUserName);
+  useLocationTracking(
+    locationPermissionStatus === 'granted' ? currentUser?.id : null,
+    locationPermissionStatus === 'granted' ? currentUserName : null
+  );
  
   // Debug: Log task loading status
   useEffect(() => {
@@ -879,11 +882,6 @@ function KaryaApp() {
 
   const handleGrant = () => setLocationPermissionStatus('granted');
   const handleDeny = () => setLocationPermissionStatus('denied');
-
-  useLocationTracking(
-    locationPermissionStatus === 'granted' ? currentUser?.id : null,
-    locationPermissionStatus === 'granted' ? currentUserName : null
-  );
 
   if (locationPermissionStatus !== 'granted' && currentUser) {
     return (
