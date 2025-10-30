@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { pwaAnalytics } from '../../../shared/utils/pwaAnalytics';
 import { formatDateOnly, formatDateTime } from '../../../shared/utils/date';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 export default function PWAAnalyticsDashboard({ users = [], departments = [], t }) {
   const [analyticsData, setAnalyticsData] = useState(null);
@@ -75,15 +76,22 @@ export default function PWAAnalyticsDashboard({ users = [], departments = [], t 
           return;
         }
 
-        const userId = selectedUser === 'all' ? null : selectedUser;
         const userIds = selectedDepartment === 'all' 
           ? (selectedUser === 'all' ? null : [selectedUser])
           : filteredUsers.map(u => u.id);
 
-        const data = await pwaAnalytics.getAnalyticsData(range.start, range.end, userIds);
-        setAnalyticsData(data);
+        const functions = getFunctions();
+        const getPWAAnalytics = httpsCallable(functions, 'getPWAAnalytics');
+        const result = await getPWAAnalytics({ 
+          startDate: range.start.toISOString(), 
+          endDate: range.end.toISOString(), 
+          userIds 
+        });
+
+        setAnalyticsData(result.data);
       } catch (err) {
         setError('Failed to load analytics data');
+        console.error(err);
       } finally {
         setIsLoading(false);
       }

@@ -3,6 +3,7 @@ import { db } from '../../../firebase';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import AttendanceImport from './AttendanceImport.jsx';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 const AttendancePage = ({ t, currentUser, users, isAdmin }) => {
   const navigate = useNavigate();
@@ -76,25 +77,11 @@ const AttendancePage = ({ t, currentUser, users, isAdmin }) => {
 
   const downloadMonthCSV = async (targetMonth) => {
     try {
-      const { start, end } = getMonthRange(targetMonth);
-      const snap = await getDocs(query(
-        collection(db, 'attendance'),
-        where('date', '>=', start),
-        where('date', '<=', end)
-      ));
-      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      const headers = ['Employee ID', 'Date', 'In Time', 'Out Time', 'OT Hours'];
-      const csvContent = [
-        headers.join(','),
-        ...rows.map(r => [
-          r.employeeId || '',
-          r.date || '',
-          r.inTime || '',
-          r.outTime || '',
-          r.otHours ?? ''
-        ].join(','))
-      ].join('\n');
+      const functions = getFunctions();
+      const generateAttendanceCSV = httpsCallable(functions, 'generateAttendanceCSV');
+      const result = await generateAttendanceCSV({ month: targetMonth });
+      
+      const { csvContent } = result.data;
 
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
@@ -113,20 +100,11 @@ const AttendancePage = ({ t, currentUser, users, isAdmin }) => {
 
   const downloadAllCSV = async () => {
     try {
-      const snap = await getDocs(collection(db, 'attendance'));
-      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const functions = getFunctions();
+      const generateAttendanceCSV = httpsCallable(functions, 'generateAttendanceCSV');
+      const result = await generateAttendanceCSV({ allTime: true });
 
-      const headers = ['Employee ID', 'Date', 'In Time', 'Out Time', 'OT Hours'];
-      const csvContent = [
-        headers.join(','),
-        ...rows.map(r => [
-          r.employeeId || '',
-          r.date || '',
-          r.inTime || '',
-          r.outTime || '',
-          r.otHours ?? ''
-        ].join(','))
-      ].join('\n');
+      const { csvContent } = result.data;
 
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
@@ -186,7 +164,7 @@ const AttendancePage = ({ t, currentUser, users, isAdmin }) => {
                   {currentUser?.name || 'User'}
                 </h2>
                 <p className="text-sm text-gray-600">
-                  {employeeId ? `${t('employeeId') || 'Employee ID'}: ${employeeId}` : (t('noEmployeeIdConfigured') || 'No Employee ID configured')}
+                  {employeeId ? `${t('employeeId') || 'Employee ID'}: ${employeeId}` : (t('noEmployeeIdConfigured') || 'Your Employee ID is not configured. Please contact your administrator to have it added to your profile.')}
                 </p>
               </div>
               

@@ -15,6 +15,9 @@ const {onSchedule} = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
 const csvParser = require('csv-parser');
+const { onCall } = require("firebase-functions/v2/https");
+
+const { PWAAnalyticsProcessor } = require('./pwaAnalyticsProcessor');
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -1123,4 +1126,73 @@ exports.importAttendanceCsv = onObjectFinalized(async (event) => {
   }
 });
 */
+
+exports.getPWAAnalytics = onCall({
+  region: 'asia-south1',
+  memory: '1GB',
+  timeoutSeconds: 120,
+}, async (request) => {
+  const { startDate, endDate, userIds } = request.data;
+  
+  if (!startDate || !endDate) {
+    throw new functions.https.HttpsError('invalid-argument', 'The function must be called with "startDate" and "endDate" arguments.');
+  }
+
+  const db = admin.firestore();
+  const analyticsProcessor = new PWAAnalyticsProcessor(db);
+  
+  try {
+    const analyticsData = await analyticsProcessor.getAnalyticsData(startDate, endDate, userIds);
+    return analyticsData;
+  } catch (error) {
+    logger.error('Error fetching PWA analytics:', error);
+    throw new functions.https.HttpsError('internal', 'Failed to fetch PWA analytics data.', error.message);
+  }
+});
+
+exports.generateAttendanceCSV = onCall({
+  region: 'asia-south1',
+  memory: '1GB',
+  timeoutSeconds: 120,
+}, async (request) => {
+  const { month, allTime } = request.data;
+  const db = admin.firestore();
+
+  let records = [];
+  try {
+    if (allTime) {
+      const snapshot = await db.collection('attendance').get();
+      records = snapshot.docs.map(doc => doc.data());
+    } else if (month) {
+      const [year, monthNum] = month.split('-');
+      const startDate = `${year}-${monthNum}-01`;
+      const endDate = `${year}-${monthNum}-31`;
+      const snapshot = await db.collection('attendance')
+        .where('date', '>=', startDate)
+        .where('date', '<=', endDate)
+        .get();
+      records = snapshot.docs.map(doc => doc.data());
+    } else {
+      throw new functions.https.HttpsError('invalid-argument', 'The function must be called with either "month" or "allTime" arguments.');
+    }
+
+    const headers = ['Employee ID', 'Date', 'In Time', 'Out Time', 'OT Hours'];
+    const csvContent = [
+      headers.join(','),
+      ...records.map(r => [
+        r.employeeId || '',
+        r.date || '',
+        r.inTime || '',
+        r.outTime || '',
+        r.otHours ?? ''
+      ].join(','))
+    ].join('\n');
+
+    return { csvContent };
+
+  } catch (error) {
+    logger.error('Error generating attendance CSV:', error);
+    throw new functions.https.HttpsError('internal', 'Failed to generate attendance CSV.', error.message);
+  }
+});
 

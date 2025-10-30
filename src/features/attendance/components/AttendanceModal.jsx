@@ -86,7 +86,7 @@ const AttendanceModal = ({ isOpen, onClose, t, currentUser, users }) => {
           
           <div className="mb-4">
             <h2 className="text-2xl font-bold text-slate-900 mb-1">{t('attendance') || 'Attendance'}</h2>
-            <p className="text-xs text-slate-600">{employeeId ? `${t('employeeId') || 'Employee ID'}: ${employeeId}` : (t('noEmployeeIdConfigured') || 'No Employee ID configured for this user')}</p>
+            <p className="text-xs text-slate-600">{employeeId ? `${t('employeeId') || 'Employee ID'}: ${employeeId}` : (t('noEmployeeIdConfigured') || 'Your Employee ID is not configured. Please contact your administrator to have it added to your profile.')}</p>
           </div>
 
           <div className="flex items-center justify-center gap-2 mb-4">

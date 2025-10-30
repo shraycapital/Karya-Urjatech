@@ -147,8 +147,6 @@ function AdminPanel({
         </button>
       </div>
 
-          {/* One-time maintenance: Backfill Assigned By - DISABLED */}
-          {/* <BackfillAssignedByTool t={t} /> */}
         </div>
       )}
 
@@ -164,114 +162,6 @@ function AdminPanel({
   );
 }
 
-function BackfillAssignedByTool({ t }) {
-  const [isRunning, setIsRunning] = useState(false);
-  const [progress, setProgress] = useState({ total: 0, updated: 0, skipped: 0, checked: 0, errors: 0 });
-
-  const backfill = async () => {
-    if (isRunning) return;
-    if (!window.confirm('Run one-time backfill to set Assigned By on old tasks? This will update tasks missing this field.')) return;
-    setIsRunning(true);
-    setProgress({ total: 0, updated: 0, skipped: 0, checked: 0, errors: 0 });
-    try {
-      // Load tasks in batches
-      const tasksRef = collection(db, 'tasks');
-      let tasksSnap = await getDocs(tasksRef);
-      const tasks = tasksSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setProgress(p => ({ ...p, total: tasks.length }));
-
-      const batchSize = 400;
-      let batch = writeBatch(db);
-      let batched = 0;
-
-      const toMillis = (ts) => {
-        if (!ts) return 0;
-        try {
-          if (typeof ts === 'string') return new Date(ts).getTime() || 0;
-          if (ts.seconds) return ts.seconds * 1000;
-          if (ts.toDate) return ts.toDate().getTime();
-        } catch {}
-        return 0;
-      };
-
-      for (const task of tasks) {
-        setProgress(p => ({ ...p, checked: p.checked + 1 }));
-        if (task.assignedById && task.assignedByName) {
-          setProgress(p => ({ ...p, skipped: p.skipped + 1 }));
-          continue;
-        }
-
-        // Fetch activity logs for this task and find earliest meaningful entry
-        let logs = [];
-        try {
-          let q1 = query(collection(db, 'activityLog'), where('entityType', '==', 'task'), where('entityId', '==', task.id));
-          // Prefer server ordering if index exists
-          try {
-            const q2 = query(q1, orderBy('serverTimestamp', 'asc'), limit(200));
-            const snap = await getDocs(q2);
-            logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          } catch {
-            const snap = await getDocs(q1);
-            logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            logs.sort((a, b) => (toMillis(a.serverTimestamp || a.timestamp) - toMillis(b.serverTimestamp || b.timestamp)));
-          }
-        } catch {
-          logs = [];
-        }
-
-        const preferred = logs.find(l => l.action === 'create' && l.userId) || logs.find(l => l.action === 'assign' && l.userId) || logs.find(l => l.userId);
-        if (!preferred) {
-          setProgress(p => ({ ...p, skipped: p.skipped + 1 }));
-          continue;
-        }
-
-        const ref = doc(db, 'tasks', task.id);
-        const updateData = { 
-          assignedById: preferred.userId, 
-          assignedByName: preferred.userName || `User-${(preferred.userId || '').slice(0,8)}` 
-        };
-        const cleanUpdateData = cleanFirestoreData(updateData);
-        batch.update(ref, cleanUpdateData);
-        batched++;
-        setProgress(p => ({ ...p, updated: p.updated + 1 }));
-
-        if (batched >= batchSize) {
-          await batch.commit();
-          batch = writeBatch(db);
-          batched = 0;
-        }
-      }
-
-      if (batched > 0) {
-        await batch.commit();
-      }
-      alert('Backfill completed successfully.');
-    } catch (e) {
-      console.error('Backfill error', e);
-      setProgress(p => ({ ...p, errors: p.errors + 1 }));
-      alert('Backfill encountered an error. Check console for details.');
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  return (
-    <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="font-medium text-yellow-900">Maintenance: Backfill Assigned By</div>
-          <div className="text-xs text-yellow-800">Sets missing Assigned By on old tasks using earliest task activity (create/assign).</div>
-          {progress.total > 0 && (
-            <div className="text-xs text-yellow-700 mt-1">Checked {progress.checked}/{progress.total} • Updated {progress.updated} • Skipped {progress.skipped}</div>
-          )}
-        </div>
-        <button className={`btn ${isRunning ? 'btn-disabled' : 'btn-warning'}`} onClick={backfill} disabled={isRunning}>
-          {isRunning ? 'Running…' : 'Run Backfill'}
-        </button>
-      </div>
-    </div>
-  );
-}
 function BackfillPointsTool({ t }) {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState({ total: 0, updated: 0, errors: 0 });
