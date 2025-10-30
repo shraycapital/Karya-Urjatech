@@ -15,10 +15,10 @@ import { LogOutIcon, SettingsIcon } from './shared/components/Icons.jsx';
 import { logActivity } from './shared/utils/activityLogger.js';
 import { toISTISOString } from './shared/utils/date';
 import { useSmartRefresh } from './shared/hooks/useSmartRefresh.js';
-import LocationPermission from './shared/components/LocationPermission.jsx';
 import { initializePwaAnalytics, logPwaEvent } from './shared/utils/pwaAnalytics.js';
 import RefreshIndicator from './shared/components/RefreshIndicator.jsx';
-import { useLocationTracking } from './shared/hooks/useLocationTracking.js';
+import { useLocationTracking } from './shared/hooks/useLocationTracker.js';
+import LocationPermissionModal from './shared/components/LocationPermissionModal.jsx';
 
 // Lazy load heavy components
 const ActivityLog = lazy(() => import('./features/admin/components/ActivityLog.jsx'));
@@ -103,6 +103,7 @@ function KaryaApp() {
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [notifications, setNotifications] = useState([]);
   const [showNotification, setShowNotification] = useState(false);
+  const [locationPermissionStatus, setLocationPermissionStatus] = useState('idle'); // idle, checking, granted, denied
 
   // Listen for online/offline changes
   useEffect(() => {
@@ -852,11 +853,38 @@ function KaryaApp() {
     ? users 
     : users.filter((u) => isUserInDepartment(u, viewingDeptId));
 
+  useEffect(() => {
+    if (currentUser) {
+      setLocationPermissionStatus('checking');
+      navigator.permissions.query({ name: 'geolocation' }).then((permissionStatus) => {
+        if (permissionStatus.state === 'granted') {
+          setLocationPermissionStatus('granted');
+        } else {
+          setLocationPermissionStatus('denied');
+        }
+      });
+    }
+  }, [currentUser]);
+
+  const handleGrant = () => setLocationPermissionStatus('granted');
+  const handleDeny = () => setLocationPermissionStatus('denied');
+
+  useLocationTracking(
+    locationPermissionStatus === 'granted' ? currentUser?.id : null,
+    locationPermissionStatus === 'granted' ? currentUserName : null
+  );
+
+  if (locationPermissionStatus !== 'granted' && currentUser) {
+    return (
+      <LocationPermissionModal
+        onGrant={handleGrant}
+        onDeny={handleDeny}
+        isPermissionDenied={locationPermissionStatus === 'denied'}
+      />
+    );
+  }
+
   return (
-    <LocationPermission onLocationDenied={() => {
-      // Log out user or show blank screen when location is denied
-      console.log('Location denied, restricting app access');
-    }}>
       <div className="min-h-screen bg-surface text-slate-900">
       {!isOnline && (
         <div className="bg-amber-500 text-white text-xs px-3 py-2 text-center">
@@ -1143,7 +1171,6 @@ function KaryaApp() {
       )}
 
     </div>
-    </LocationPermission>
   );
 }
 
