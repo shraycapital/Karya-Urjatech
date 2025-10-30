@@ -9,6 +9,29 @@
 - **Examples**: All task creation dates, completion dates, activity logs use this format
 - **Parsing**: Use proper parsing methods, NOT `new Date(timestamp)`
 
+## 🔧 Environment Setup
+
+### Required Environment Variables
+
+Create a `.env` file in the project root with the following variables:
+
+```bash
+# Google Maps API Configuration
+# Get your API key from: https://console.cloud.google.com/apis/credentials
+VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+```
+
+**Security Note**: Never commit your `.env` file to version control. The `.env.example` file is provided as a template.
+
+### Getting a Google Maps API Key
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a new project or select an existing one
+3. Enable the Maps JavaScript API
+4. Create credentials (API Key)
+5. Restrict the API key to your domain for security
+6. Copy the key to your `.env` file
+
 ## 📚 Quick Reference
 
 ```javascript

@@ -9,6 +9,7 @@ import EditTaskModal from './EditTaskModal';
 import { toISTISOString } from '../../../shared/utils/date';
 import Section from '../../../shared/components/Section.jsx';
 import { logActivity } from '../../../shared/utils/activityLogger.js';
+import { cleanFirestoreData } from '../../../shared/utils/firestoreHelpers.js';
 import { 
   createTask as addTask, 
   patchTask as updateTask, 
@@ -335,16 +336,15 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
     setBonusLedger(updatedLedger);
 
     try {
-      await updateDoc(doc(db, 'users', currentUser.id), {
+      const updateData = {
         dailyBonusLedger: updatedLedger,
         dailyBonusLastClaimedAt: isoNow,
-      });
+      };
+      const cleanUpdateData = cleanFirestoreData(updateData);
+      await updateDoc(doc(db, 'users', currentUser.id), cleanUpdateData);
 
       try {
-        await updateDoc(doc(db, 'Users', currentUser.id), {
-          dailyBonusLedger: updatedLedger,
-          dailyBonusLastClaimedAt: isoNow,
-        });
+        await updateDoc(doc(db, 'Users', currentUser.id), cleanUpdateData);
       } catch (_upperCollectionError) {
         // Ignore missing alternate collection
       }

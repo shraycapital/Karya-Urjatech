@@ -1,6 +1,8 @@
 import { db } from '../../../firebase';
 import { collection, doc, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { logActivity } from '../../../shared/utils/activityLogger';
+import { cleanFirestoreData } from '../../../shared/utils/firestoreHelpers';
+import { resetPointsExpirationDate, expireAllUserPoints } from '../../../shared/utils/pointsManagement';
 
 export const addUser = async (newUser, currentUser) => {
   const result = await addDoc(collection(db, 'users'), newUser);
@@ -15,13 +17,16 @@ export const updateUser = async (user, oldUser, currentUser) => {
   const { id, ...data } = user;
   console.log('Updating user in Firestore:', { id, data, oldUser });
   
+  // Clean undefined values from data
+  const cleanData = cleanFirestoreData(data);
+  
   // Ensure role is included in the data
-  if (!data.role) {
+  if (!cleanData.role) {
     console.warn('No role found in user data, using default USER role');
-    data.role = 'User';
+    cleanData.role = 'User';
   }
   
-  await updateDoc(doc(db, 'users', id), data);
+  await updateDoc(doc(db, 'users', id), cleanData);
   console.log('User updated successfully in Firestore');
   if (oldUser) {
     logActivity('update', 'user', id, oldUser.name, currentUser.id, currentUser.name, {
@@ -50,7 +55,11 @@ export const addDepartment = async (dept, currentUser) => {
 
 export const updateDepartment = async (dept, oldDept, currentUser) => {
   const { id, ...data } = dept;
-  await updateDoc(doc(db, 'departments', id), data);
+  
+  // Clean undefined values from data
+  const cleanData = cleanFirestoreData(data);
+  
+  await updateDoc(doc(db, 'departments', id), cleanData);
   if (oldDept) {
     logActivity('update', 'department', id, oldDept.name, currentUser.id, currentUser.name, {
       changes: Object.keys(data),
@@ -65,4 +74,25 @@ export const removeDepartment = async (deptId, dept, currentUser) => {
   if (dept) {
     logActivity('delete', 'department', deptId, dept.name, currentUser.id, currentUser.name);
   }
+};
+
+export const resetUserPointsExpiration = async (userId, user, currentUser) => {
+  const result = await resetPointsExpirationDate(userId);
+  if (result.success && user) {
+    logActivity('update', 'user', userId, user.name, currentUser.id, currentUser.name, {
+      action: 'reset_points_expiration',
+      newUsablePoints: result.newUsablePoints,
+    });
+  }
+  return result;
+};
+
+export const expireUserPoints = async (userId, user, currentUser) => {
+  const result = await expireAllUserPoints(userId);
+  if (result.success && user) {
+    logActivity('update', 'user', userId, user.name, currentUser.id, currentUser.name, {
+      action: 'expire_all_points',
+    });
+  }
+  return result;
 };

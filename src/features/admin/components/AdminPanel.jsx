@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../../../firebase';
-import { collection, getDocs, query, where, orderBy, limit, startAfter, writeBatch, doc } from 'firebase/firestore';
+import { collection, getDocs, query, where, orderBy, limit, startAfter, writeBatch, doc, updateDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { ROLES } from '../../../shared/constants';
 import {
   addUser,
@@ -12,6 +12,7 @@ import {
 } from '../api/adminApi';
 import ActivityLog from './ActivityLog.jsx';
 import { canAccessFeature } from '../../../shared/utils/permissions.js';
+import { cleanFirestoreData } from '../../../shared/utils/firestoreHelpers.js';
 
 function AdminPanel({
   users,
@@ -88,6 +89,7 @@ function AdminPanel({
     }
   };
 
+
   const [showActivityLog, setShowActivityLog] = useState(false);
   
   return (
@@ -157,9 +159,11 @@ function AdminPanel({
           t={t} 
         />
       )}
+
     </div>
   );
 }
+
 function BackfillAssignedByTool({ t }) {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState({ total: 0, updated: 0, skipped: 0, checked: 0, errors: 0 });
@@ -222,7 +226,12 @@ function BackfillAssignedByTool({ t }) {
         }
 
         const ref = doc(db, 'tasks', task.id);
-        batch.update(ref, { assignedById: preferred.userId, assignedByName: preferred.userName || `User-${(preferred.userId || '').slice(0,8)}` });
+        const updateData = { 
+          assignedById: preferred.userId, 
+          assignedByName: preferred.userName || `User-${(preferred.userId || '').slice(0,8)}` 
+        };
+        const cleanUpdateData = cleanFirestoreData(updateData);
+        batch.update(ref, cleanUpdateData);
         batched++;
         setProgress(p => ({ ...p, updated: p.updated + 1 }));
 
@@ -258,6 +267,241 @@ function BackfillAssignedByTool({ t }) {
         </div>
         <button className={`btn ${isRunning ? 'btn-disabled' : 'btn-warning'}`} onClick={backfill} disabled={isRunning}>
           {isRunning ? 'Running…' : 'Run Backfill'}
+        </button>
+      </div>
+    </div>
+  );
+}
+function BackfillPointsTool({ t }) {
+  const [isRunning, setIsRunning] = useState(false);
+  const [progress, setProgress] = useState({ total: 0, updated: 0, errors: 0 });
+
+  const DIFFICULTY_POINTS = {
+    easy: 10,
+    medium: 25,
+    hard: 50,
+    critical: 100,
+  };
+
+  const POINTS_CONFIG = {
+    EXPIRATION_DAYS: 90,
+  };
+
+  // Use a broader date range - from Sept 1, 2024 to today
+  const START_DATE = new Date('2024-09-01T00:00:00Z');
+  const END_DATE = new Date();
+
+  const formatDateKey = (date) => {
+    if (!date) return null;
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const parseTimestamp = (timestamp) => {
+    if (!timestamp) return null;
+    
+    // Handle Firestore Timestamp with seconds/nanoseconds
+    if (timestamp.seconds !== undefined) {
+      return new Date(timestamp.seconds * 1000 + (timestamp.nanoseconds || 0) / 1000000);
+    }
+    
+    // Handle Firestore Timestamp with toDate method
+    if (typeof timestamp.toDate === 'function') {
+      return timestamp.toDate();
+    }
+    
+    // Handle regular Date objects
+    if (timestamp instanceof Date) {
+      return timestamp;
+    }
+    
+    // Handle string dates
+    if (typeof timestamp === 'string') {
+      return new Date(timestamp);
+    }
+    
+    return null;
+  };
+
+  const calculateTaskPoints = (task, userId) => {
+    if (!task.assignedUserIds || !task.assignedUserIds.includes(userId)) {
+      return 0;
+    }
+
+    const assignedUserCount = task.assignedUserIds.length;
+    let basePoints = 50;
+    
+    if (task.difficulty && DIFFICULTY_POINTS[task.difficulty]) {
+      basePoints = DIFFICULTY_POINTS[task.difficulty];
+    }
+    
+    if (task.isRdNewSkill) {
+      basePoints = basePoints * 5;
+    }
+    
+    let basePointsPerUser = Math.round(basePoints / assignedUserCount);
+    
+    if (!task.isRdNewSkill) {
+      const collaborationBonus = assignedUserCount > 1 ? Math.round(basePointsPerUser * 0.1) : 0;
+      const urgentBonus = task.isUrgent ? Math.round(basePointsPerUser * 0.25) : 0;
+      basePointsPerUser += collaborationBonus + urgentBonus;
+    }
+    
+    const completionDate = parseTimestamp(task.completedAt);
+    const targetDate = parseTimestamp(task.targetDate);
+    if (completionDate && targetDate && completionDate <= targetDate) {
+      if (!task.isRdNewSkill) {
+        basePointsPerUser += 3;
+      }
+    }
+    
+    return basePointsPerUser;
+  };
+
+  const backfillPoints = async () => {
+    if (isRunning) return;
+    if (!window.confirm('This will backfill points history for all users from September 2024 onwards. Continue?')) {
+      return;
+    }
+
+    setIsRunning(true);
+    setProgress({ total: 0, updated: 0, errors: 0 });
+
+    try {
+      // Get all users
+      const usersSnapshot = await getDocs(collection(db, 'users'));
+      const users = usersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProgress(p => ({ ...p, total: users.length }));
+
+      // Get all completed tasks
+      const tasksSnapshot = await getDocs(
+        query(collection(db, 'tasks'), where('status', '==', 'Complete'))
+      );
+      const tasks = tasksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      let updated = 0;
+      let errors = 0;
+
+      for (const user of users) {
+        try {
+          setProgress(p => ({ ...p, checked: p.checked + 1 }));
+
+          const userTasks = tasks.filter(task => {
+            if (!task.assignedUserIds || !task.assignedUserIds.includes(user.id)) {
+              return false;
+            }
+            
+            // Use completedAt, fallback to updatedAt or createdAt
+            let completionDate = parseTimestamp(task.completedAt);
+            if (!completionDate) {
+              completionDate = parseTimestamp(task.updatedAt);
+            }
+            if (!completionDate) {
+              completionDate = parseTimestamp(task.createdAt);
+            }
+            
+            if (!completionDate) return false;
+            
+            // Check if within date range
+            return completionDate >= START_DATE && completionDate <= END_DATE;
+          });
+
+          if (userTasks.length === 0) {
+            continue;
+          }
+
+          const pointsByDate = {};
+          userTasks.forEach(task => {
+            const completionDate = parseTimestamp(task.completedAt);
+            if (!completionDate) return;
+            const dateKey = formatDateKey(completionDate);
+            if (!dateKey) return;
+            const points = calculateTaskPoints(task, user.id);
+            pointsByDate[dateKey] = (pointsByDate[dateKey] || 0) + points;
+          });
+
+          const existingPointsHistory = user.pointsHistory || {};
+          const newPointsHistory = { ...existingPointsHistory };
+
+          Object.entries(pointsByDate).forEach(([dateKey, points]) => {
+            if (newPointsHistory[dateKey]) {
+              newPointsHistory[dateKey].points += points;
+            } else {
+              newPointsHistory[dateKey] = {
+                points: points,
+                addedAt: Timestamp.fromDate(new Date(dateKey)),
+                expirationDays: POINTS_CONFIG.EXPIRATION_DAYS,
+                isUsable: true,
+              };
+            }
+          });
+
+          let totalPoints = 0;
+          const now = new Date();
+          let usablePoints = 0;
+
+          Object.entries(newPointsHistory).forEach(([dateKey, entry]) => {
+            if (!entry || typeof entry.points !== 'number') return;
+            totalPoints += entry.points;
+            const pointsDate = new Date(dateKey);
+            const expirationDate = new Date(pointsDate);
+            expirationDate.setDate(expirationDate.getDate() + (entry.expirationDays || POINTS_CONFIG.EXPIRATION_DAYS));
+            if (now <= expirationDate && entry.isUsable !== false) {
+              usablePoints += entry.points;
+            }
+          });
+
+          const userRef = doc(db, 'users', user.id);
+          const updateData = {
+            pointsHistory: newPointsHistory,
+            usablePoints: Math.floor(usablePoints),
+            totalPoints: Math.floor(totalPoints),
+            pointsHistoryBackfilled: true,
+            pointsHistoryBackfillDate: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          
+          // Clean undefined values
+          const cleanUpdateData = cleanFirestoreData(updateData);
+          await updateDoc(userRef, cleanUpdateData);
+
+          updated++;
+        } catch (error) {
+          console.error(`Error processing ${user.name}:`, error);
+          errors++;
+        }
+      }
+
+      setProgress(p => ({ ...p, updated, errors }));
+      alert(`Backfill complete! Updated ${updated} users.`);
+    } catch (error) {
+      console.error('Backfill error:', error);
+      alert('Backfill encountered an error. Check console for details.');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="font-medium text-blue-900 mb-1">Points History Backfill</div>
+          <div className="text-sm text-blue-700">Backfill recent points (Sept 2024 onwards) to pointsHistory for all users</div>
+          {progress.total > 0 && (
+            <div className="text-xs text-blue-600 mt-2">
+              Updated: {progress.updated} • Errors: {progress.errors} • Total: {progress.total}
+            </div>
+          )}
+        </div>
+        <button
+          className={`btn ${isRunning ? 'btn-disabled' : 'btn-primary'}`}
+          onClick={backfillPoints}
+          disabled={isRunning}
+        >
+          {isRunning ? 'Running...' : 'Run Backfill'}
         </button>
       </div>
     </div>
@@ -482,17 +726,21 @@ function EditableUserRow({ user, departments, onSave, onRemove, t }) {
             <p className="text-xs text-slate-400">{user.email}</p>
           )}
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setIsEditing(true)} className="btn btn-sm btn-secondary">
-            ✏️ {t('edit')}
-          </button>
-          <button 
-            onClick={() => onRemove(user.id)} 
-            className="btn btn-sm btn-error"
-            title={t('remove')}
-          >
-            🗑️
-          </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <button onClick={() => setIsEditing(true)} className="btn btn-sm btn-secondary">
+              ✏️ {t('edit')}
+            </button>
+            <button 
+              onClick={() => onRemove(user.id)} 
+              className="btn btn-sm btn-error"
+              title={t('remove')}
+            >
+              🗑️
+            </button>
+          </div>
+          <div className="flex gap-2">
+          </div>
         </div>
       </div>
     </div>

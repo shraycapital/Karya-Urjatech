@@ -19,6 +19,7 @@ import LocationPermission from './shared/components/LocationPermission.jsx';
 import { initializePwaAnalytics, logPwaEvent } from './shared/utils/pwaAnalytics.js';
 import RefreshIndicator from './shared/components/RefreshIndicator.jsx';
 import { useLocationTracking } from './shared/hooks/useLocationTracking.js';
+import { cleanFirestoreData } from './shared/utils/firestoreHelpers.js';
 
 // Lazy load heavy components
 const ActivityLog = lazy(() => import('./features/admin/components/ActivityLog.jsx'));
@@ -229,6 +230,8 @@ function KaryaApp() {
             }
             return merged;
           });
+        }, (error) => {
+          console.warn('Users collection listener error:', error);
         });
         const unsub2 = onSnapshot(collection(db, 'Users'), (snap) => {
           const us = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -239,14 +242,20 @@ function KaryaApp() {
             }
             return merged;
           });
+        }, (error) => {
+          console.warn('Users (uppercase) collection listener error:', error);
         });
         const unsub3 = onSnapshot(collection(db, 'departments'), (snap) => {
           const dep = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setDepartments((prev) => mergeById(dep, prev));
+        }, (error) => {
+          console.warn('Departments collection listener error:', error);
         });
         const unsub4 = onSnapshot(collection(db, 'Departments'), (snap) => {
           const dep = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
           setDepartments((prev) => mergeById(prev, dep));
+        }, (error) => {
+          console.warn('Departments (uppercase) collection listener error:', error);
         });
 
         // Phase 6: Load tasks with progressive loading (non-blocking)
@@ -703,7 +712,9 @@ function KaryaApp() {
       const token = await enablePushNotifications(VAPID_PUBLIC_KEY);
 
       if (currentUser?.id && token) {
-        await updateDoc(doc(db, 'users', currentUser.id), { fcmTokens: arrayUnion(token) });
+        const updateData = { fcmTokens: arrayUnion(token) };
+        const cleanUpdateData = cleanFirestoreData(updateData);
+        await updateDoc(doc(db, 'users', currentUser.id), cleanUpdateData);
         localStorage.setItem(`kartavya_push_saved_${currentUser.id}`, '1');
         setShowPushBanner(false);
         setNotifications(prev => [{

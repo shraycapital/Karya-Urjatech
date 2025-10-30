@@ -19,8 +19,8 @@ const csvParser = require('csv-parser');
 // Initialize Firebase Admin
 admin.initializeApp();
 
-// For cost control and region alignment with Firestore (asia-south2)
-setGlobalOptions({ maxInstances: 10, region: 'asia-south2' });
+// For cost control and region alignment with Firestore (asia-south1)
+setGlobalOptions({ maxInstances: 10, region: 'asia-south1' });
 
 // Function to send push notifications to all users
 async function sendPushNotificationToAll(title, body, data = {}) {
@@ -572,7 +572,8 @@ exports.weeklyLeaderboardReset = onSchedule({
   schedule: '0 0 * * 1', // Every Monday at midnight
   timeZone: 'Asia/Kolkata',
   memory: '1GB',
-  timeoutSeconds: 540
+  timeoutSeconds: 540,
+  region: 'asia-south1' // Use asia-south1 region for Cloud Scheduler
 }, async (event) => {
   const db = admin.firestore();
   const logger = require('firebase-functions/logger');
@@ -967,9 +968,9 @@ function calculateLeadershipPoints(task, taskExecutionPoints) {
 
   // Completion Bonus
   if (isRdNewSkill) {
-    completionBonus = taskExecutionPoints;
+    completionBonus = Math.round(taskExecutionPoints * 0.50);
   } else {
-    completionBonus = Math.round(taskExecutionPoints * 0.10);
+    completionBonus = Math.round(taskExecutionPoints * 0.20);
   }
 
   // Difficulty Fairness (only for regular tasks)
@@ -1012,7 +1013,9 @@ function getBonusPointsInRange(bonusLedger, startDate, endDate) {
 
 // Storage-triggered CSV import for large attendance files
 // Upload to gs://<bucket>/attendance_imports/<any>.csv
-exports.importAttendanceCsv = onObjectFinalized({ bucket: process.env.FUNCTIONS_EMULATOR ? undefined : undefined }, async (event) => {
+// Temporarily disabled due to storage bucket region configuration issue
+/*
+exports.importAttendanceCsv = onObjectFinalized(async (event) => {
   const file = event.data;
   const bucketName = file.bucket;
   const name = file.name || '';
@@ -1119,3 +1122,5 @@ exports.importAttendanceCsv = onObjectFinalized({ bucket: process.env.FUNCTIONS_
     throw error;
   }
 });
+*/
+

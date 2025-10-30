@@ -371,9 +371,9 @@ const calculateLeadershipPoints = (task, taskExecutionPoints) => {
   
   // Completion Bonus
   if (isRdNewSkill) {
-    completionBonus = taskExecutionPoints; // 100% for R&D
+    completionBonus = Math.round(taskExecutionPoints * 0.50); // 50% for R&D
   } else {
-    completionBonus = Math.round(taskExecutionPoints * 0.10); // 10% for regular
+    completionBonus = Math.round(taskExecutionPoints * 0.20); // 20% for regular
   }
   
   // Difficulty Fairness (5% for regular tasks)

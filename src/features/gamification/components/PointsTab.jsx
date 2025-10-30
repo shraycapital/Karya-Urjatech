@@ -49,9 +49,9 @@ function PointsTab({ currentUser, tasks, users, departments, t, onGoToTasks }) {
 
     // Completion Bonus
     if (isRdNewSkill) {
-      completionBonus = taskExecutionPoints;
+      completionBonus = Math.round(taskExecutionPoints * 0.50);
     } else {
-      completionBonus = Math.round(taskExecutionPoints * 0.10);
+      completionBonus = Math.round(taskExecutionPoints * 0.20);
     }
 
     // Difficulty Fairness (only for regular tasks)

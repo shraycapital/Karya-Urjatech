@@ -6,6 +6,7 @@ import { db } from '../../../firebase';
 import { collection, onSnapshot, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, getDocs, getDoc, Timestamp } from 'firebase/firestore';
 import { toISTISOString } from '../../../shared/utils/date';
 import { logTaskActivity, logActivity } from '../../../shared/utils/activityLogger';
+import { cleanFirestoreData } from '../../../shared/utils/firestoreHelpers';
 
 const TASKS_COLLECTION = 'tasks'; // Primary collection
 const TASKS_COLLECTION_UPPER = 'Tasks'; // Backup collection
@@ -62,10 +63,17 @@ export const subscribeTasks = (onChange, options = {}) => {
   const unsub1 = onSnapshot(getPrimaryCollection(), (snap) => {
     currentPrimary = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     emit();
+  }, (error) => {
+    console.warn('Primary collection listener error:', error);
+    // Don't emit on error to avoid clearing data
   });
+  
   const unsub2 = onSnapshot(getBackupCollection(), (snap) => {
     currentBackup = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     emit();
+  }, (error) => {
+    console.warn('Backup collection listener error:', error);
+    // Don't emit on error to avoid clearing data
   });
 
   return () => { unsub1(); unsub2(); };
@@ -212,9 +220,7 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
   const effectiveUserName = currentUserName || (typeof localStorage !== 'undefined' ? (localStorage.getItem('kartavya_userName') || 'Unknown') : 'Unknown');
 
   // Clean undefined values from updates
-  const cleanUpdates = Object.fromEntries(
-    Object.entries(updates).filter(([key, value]) => value !== undefined)
-  );
+  const cleanUpdates = cleanFirestoreData(updates);
   
   const data = { ...cleanUpdates, updatedAt: serverTimestamp(), updatedById: effectiveUserId };
   if (updates.status === 'Ongoing' && !updates.startedAt) data.startedAt = serverTimestamp();
@@ -231,7 +237,9 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
     // Don't update originalAssignedById and originalAssignedByName - they should remain unchanged
   }
   
-  await updateDoc(doc(getPrimaryCollection(), taskId), data);
+  // Clean the final data object before sending to Firestore
+  const finalData = cleanFirestoreData(data);
+  await updateDoc(doc(getPrimaryCollection(), taskId), finalData);
   
   // Log task update activity
   if (currentTask) {
@@ -299,7 +307,9 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
       notes: updatedNotes
     };
 
-    await updateDoc(doc(getPrimaryCollection(), taskId), updateData);
+    // Clean the update data before sending to Firestore
+    const cleanUpdateData = cleanFirestoreData(updateData);
+    await updateDoc(doc(getPrimaryCollection(), taskId), cleanUpdateData);
 
     console.debug('Task delete update payload', { taskId, updateData });
 
@@ -436,6 +446,9 @@ export const subscribeScheduledTasks = (onChange) => {
   return onSnapshot(scheduledTasksRef, (snap) => {
     const scheduledTasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     onChange(scheduledTasks);
+  }, (error) => {
+    console.warn('Scheduled tasks listener error:', error);
+    // Don't call onChange on error to avoid clearing data
   });
 };
 
@@ -443,13 +456,18 @@ export const updateScheduledTask = async (scheduledTaskId, updates = {}, current
   const effectiveUserId = currentUserId || (typeof localStorage !== 'undefined' ? localStorage.getItem('kartavya_userId') : null) || 'system';
   const effectiveUserName = currentUserName || (typeof localStorage !== 'undefined' ? (localStorage.getItem('kartavya_userName') || 'Unknown') : 'Unknown');
 
+  // Clean undefined values from updates
+  const cleanUpdates = cleanFirestoreData(updates);
+
   const data = { 
-    ...updates, 
+    ...cleanUpdates, 
     updatedAt: serverTimestamp(), 
     updatedById: effectiveUserId 
   };
   
-  await updateDoc(doc(db, SCHEDULED_TASKS_COLLECTION, scheduledTaskId), data);
+  // Clean the final data object before sending to Firestore
+  const finalData = cleanFirestoreData(data);
+  await updateDoc(doc(db, SCHEDULED_TASKS_COLLECTION, scheduledTaskId), finalData);
   
   // Log scheduled task update activity
   try {
@@ -501,7 +519,7 @@ export const triggerScheduledTasks = async () => {
   try {
     // Get the Firebase project ID from the config
     const projectId = 'kartavya-58d2c'; // You may want to get this from environment variables
-    const region = 'asia-south2';
+    const region = 'asia-south1'; // Fixed: Match the region where functions are deployed
     const functionUrl = `https://${region}-${projectId}.cloudfunctions.net/processScheduledTasksHttp`;
     
     const response = await fetch(functionUrl, {

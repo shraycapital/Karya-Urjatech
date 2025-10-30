@@ -9,7 +9,7 @@
  * Calculate Leadership Points for a completed task
  * 
  * LP Components:
- * - Completion Bonus (10% of task EP): Awarded when team completes a task
+ * - Completion Bonus (20% of task EP): Awarded when team completes a task
  * - Difficulty Fairness (5% of task EP): Awarded if task difficulty matches actual completion time
  * - On-Time Delivery (5% of task EP): Awarded if task completed before/on target date
  * 
@@ -31,11 +31,11 @@ export function calculateLeadershipPoints(task, taskExecutionPoints) {
 
   // 1. Completion Bonus
   if (isRdNewSkill) {
-    // R&D/New Skill tasks: 100% of EP as completion bonus
-    completionBonus = taskExecutionPoints;
+    // R&D/New Skill tasks: 50% of EP as completion bonus
+    completionBonus = Math.round(taskExecutionPoints * 0.50);
   } else {
-    // Regular tasks: 10% of EP
-    completionBonus = Math.round(taskExecutionPoints * 0.10);
+    // Regular tasks: 20% of EP
+    completionBonus = Math.round(taskExecutionPoints * 0.20);
   }
 
   // 2. Difficulty Fairness (5% of EP) - Only for regular tasks
@@ -176,7 +176,7 @@ export function getLPBreakdownDisplay(lpData) {
       label: 'Team Completion',
       value: lpData.completionBonus,
       icon: '✅',
-      description: '10% of team\'s EP'
+      description: '20% of team\'s EP'
     },
     {
       label: 'Task Calibration',

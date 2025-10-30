@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import Papa from 'papaparse';
 import { db } from '../../../firebase';
 import { collection, doc, setDoc, writeBatch } from 'firebase/firestore';
+import { cleanFirestoreData } from '../../../shared/utils/firestoreHelpers.js';
 
 export default function AttendanceImport({ t }) {
   const [rows, setRows] = useState([]); // preview only (first 20)
@@ -48,7 +49,8 @@ export default function AttendanceImport({ t }) {
             const r = normalizeRow(raw);
             if (!r.employeeId || !r.date) { setSkippedCount((s) => s + 1); continue; }
             const docId = `${r.employeeId}_${r.date}`;
-            batch.set(doc(collection(db, 'attendance'), docId), r, { merge: true });
+            const cleanData = cleanFirestoreData(r);
+            batch.set(doc(collection(db, 'attendance'), docId), cleanData, { merge: true });
             batchCount += 1;
 
             if (previewCount < 20) {

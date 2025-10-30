@@ -21,14 +21,13 @@
     <meta name="msapplication-TileImage" content="/icons/icon-144x144.png" />
     <title>Urjatech Karya</title>
     <link href="/src/index.css" rel="stylesheet">
-    <!-- Google Maps API -->
-    <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDAgJ6qCNzZw25gIrll1F5frOjo5aYQVCI&libraries=geometry&loading=async"></script>
+    <!-- Google Maps API will be loaded dynamically by the application -->
   </head>
   <body>
     <div id="root"></div>
     <script>
-      // Google Maps API Key for location tracking
-      window.__KARTAVYA_GOOGLE_MAPS_API_KEY__ = 'AIzaSyDAgJ6qCNzZw25gIrll1F5frOjo5aYQVCI';
+      // Google Maps API Key will be loaded from environment variables
+      // This is handled by the LocationHistoryView component
     </script>
     <script type="module" src="/src/main.jsx"></script>
     

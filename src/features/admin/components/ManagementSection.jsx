@@ -5,6 +5,7 @@ import { ROLES } from '../../../shared/constants.js';
 const PWAAnalyticsDashboard = lazy(() => import('./PWAAnalyticsDashboard'));
 const TaskManagement = lazy(() => import('./ManagementDashboard'));
 const LocationsTab = lazy(() => import('../../locations/components/LocationsTab.jsx'));
+const VoucherRedemptionDashboard = lazy(() => import('./VoucherRedemptionDashboard.jsx'));
 
 export default function ManagementSection({ 
   currentUser, 
@@ -23,6 +24,7 @@ export default function ManagementSection({
   const canSeeManagement = canAccessFeature(currentUser?.role, 'management-dashboard');
   const canSeeAnalytics = canAccessFeature(currentUser?.role, 'analytics-dashboard');
   const isAdmin = currentUser?.role === ROLES.ADMIN;
+  const isManagementOrAdmin = canSeeManagement || isAdmin;
 
   // If user cannot see any tab, show access denied
   if (!canSeeManagement && !canSeeAnalytics && !isAdmin) {
@@ -70,6 +72,18 @@ export default function ManagementSection({
               }`}
             >
               📈 {t('analyticsDashboard') || 'Analytics Dashboard'}
+            </button>
+          )}
+          {isManagementOrAdmin && (
+            <button
+              onClick={() => setActiveManagementTab('voucher-redemption')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                activeManagementTab === 'voucher-redemption'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              🎫 {t('voucherRedemption') || 'Voucher Redemption'}
             </button>
           )}
           {isAdmin && (
@@ -133,6 +147,20 @@ export default function ManagementSection({
               tasks={tasks}
               activityLogs={activityLogs}
               t={t}
+            />
+          </Suspense>
+        )}
+
+        {activeManagementTab === 'voucher-redemption' && isManagementOrAdmin && (
+          <Suspense fallback={
+            <div className="flex items-center justify-center p-8">
+              <div className="w-8 h-8 border-2 border-brand-600 border-t-transparent rounded-full animate-spin"></div>
+              <span className="ml-2 text-sm text-slate-500">{t('loadingVoucherDashboard') || 'Loading voucher redemption dashboard...'}</span>
+            </div>
+          }>
+            <VoucherRedemptionDashboard
+              currentUser={currentUser}
+              users={users}
             />
           </Suspense>
         )}

@@ -14,7 +14,7 @@
  */
 export const triggerManualWeeklyReset = async (adminUserId) => {
   try {
-    const response = await fetch('https://asia-south2-karya-urjatech.cloudfunctions.net/manualWeeklyReset', {
+    const response = await fetch('https://asia-south1-kartavya-58d2c.cloudfunctions.net/manualWeeklyReset', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

@@ -69,8 +69,8 @@ Leadership Points are awarded to the user who created/assigned a task when it is
 LP has three components:
 
 -   **Completion Bonus**:
-    -   For regular tasks: **10%** of the task's total EP.
-    -   For R&D/New Skill tasks: **100%** of the task's total EP.
+    -   For regular tasks: **20%** of the task's total EP.
+    -   For R&D/New Skill tasks: **50%** of the task's total EP.
 -   **Difficulty Fairness Bonus**: **5%** of the task's EP. This is awarded if the actual time taken to complete the task is within a reasonable range of the expected time for its difficulty level. This bonus is not awarded for R&D tasks.
 -   **On-Time Delivery Bonus**: **5%** of the task's EP if the task is completed by its target date. This bonus is not awarded for R&D tasks.
 

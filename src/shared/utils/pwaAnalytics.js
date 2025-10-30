@@ -3,6 +3,7 @@ import { db } from '../../firebase';
 import { logPWAActivity } from './activityLogger';
 import React, { useState, useEffect, useMemo } from 'react';
 import { getAnalytics, logEvent } from "firebase/analytics";
+import { cleanFirestoreData } from './firestoreHelpers';
 
 // Daily aggregation system for PWA analytics
 export class PWAAnalyticsManager {
@@ -195,7 +196,10 @@ export class PWAAnalyticsManager {
     // Add context increments for this event
     this.addContextToSummary(updates, details, userId);
 
-    await updateDoc(docRef, updates);
+    // Clean undefined values from updates
+    const cleanUpdates = cleanFirestoreData(updates);
+
+    await updateDoc(docRef, cleanUpdates);
   }
 
   // Add context information to summary

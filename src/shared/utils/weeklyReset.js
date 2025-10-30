@@ -7,6 +7,7 @@
 
 import { db } from '../../firebase';
 import { collection, doc, updateDoc, getDocs, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { cleanFirestoreData } from './firestoreHelpers';
 
 /**
  * Check if it's time for a weekly reset
@@ -81,7 +82,8 @@ export async function archiveWeeklyLeaderboard(userRankings, weekStart, weekEnd)
   try {
     // Store archive in Firestore
     const archiveRef = doc(collection(db, 'weeklyLeaderboardArchives'));
-    await updateDoc(archiveRef, archiveData);
+    const cleanArchiveData = cleanFirestoreData(archiveData);
+    await updateDoc(archiveRef, cleanArchiveData);
     
     return { success: true, archiveId: archiveRef.id, data: archiveData };
   } catch (error) {
@@ -125,10 +127,12 @@ export async function resetWeeklyScores() {
     
     // Update the global reset timestamp
     const resetTimestampRef = doc(db, 'system', 'weeklyReset');
-    await updateDoc(resetTimestampRef, {
+    const resetData = {
       lastReset: serverTimestamp(),
       resetCount: serverTimestamp() // This will be incremented by the cloud function
-    });
+    };
+    const cleanResetData = cleanFirestoreData(resetData);
+    await updateDoc(resetTimestampRef, cleanResetData);
     
     return { 
       success: true, 
@@ -264,9 +268,9 @@ function calculateLeadershipPoints(task, taskExecutionPoints) {
 
   // Completion Bonus
   if (isRdNewSkill) {
-    completionBonus = taskExecutionPoints;
+    completionBonus = Math.round(taskExecutionPoints * 0.50);
   } else {
-    completionBonus = Math.round(taskExecutionPoints * 0.10);
+    completionBonus = Math.round(taskExecutionPoints * 0.20);
   }
 
   // Difficulty Fairness (only for regular tasks)

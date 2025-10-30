@@ -345,7 +345,7 @@ export default function RequestModal({
                 className="mr-2 h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
               />
               <label htmlFor="isRdNewSkill" className="text-sm text-gray-700">
-                R&D/New Skill (5x EP, 100% LP)
+                R&D/New Skill (5x EP, 50% LP)
               </label>
             </div>
 

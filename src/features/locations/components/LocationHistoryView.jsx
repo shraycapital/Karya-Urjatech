@@ -18,18 +18,16 @@ const loadGoogleMaps = () => {
   }
   if (googleMapsLoaderPromise) return googleMapsLoaderPromise;
 
-  const runtimeKey =
-    (typeof window !== 'undefined' && window.__KARTAVYA_GOOGLE_MAPS_API_KEY__) || undefined;
-  const apiKey =
-    runtimeKey ||
+  // Get API key from environment variables (Vite uses import.meta.env)
+  const apiKey = 
     (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GOOGLE_MAPS_API_KEY) ||
     (typeof process !== 'undefined' && process.env.REACT_APP_GOOGLE_MAPS_API_KEY);
 
   console.log('Google Maps API Key:', apiKey ? 'Found' : 'Missing');
-  console.log('Runtime Key:', runtimeKey ? 'Found' : 'Missing');
+  console.log('Environment:', typeof import.meta !== 'undefined' ? 'Vite' : 'Node.js');
 
   if (!apiKey) {
-    return Promise.reject(new Error('GOOGLE_MAPS_API_KEY missing'));
+    return Promise.reject(new Error('VITE_GOOGLE_MAPS_API_KEY environment variable is missing. Please check your .env file.'));
   }
 
   googleMapsLoaderPromise = new Promise((resolve, reject) => {
@@ -400,7 +398,7 @@ const LocationHistoryView = ({
               <div class="text-center">
                 <div class="text-4xl mb-4">🗺️</div>
                 <h3 class="text-lg font-semibold text-gray-700 mb-2">Google Maps Not Available</h3>
-                <p class="text-sm text-gray-600 mb-4">Google Maps API key is not configured or there's a connection issue.</p>
+                <p class="text-sm text-gray-600 mb-4">Google Maps API key is not configured. Please check your .env file and ensure VITE_GOOGLE_MAPS_API_KEY is set.</p>
                 <div class="text-xs text-gray-500 bg-gray-50 p-3 rounded border">
                   <strong>Error:</strong> ${error.message || 'Unknown error'}
                 </div>
