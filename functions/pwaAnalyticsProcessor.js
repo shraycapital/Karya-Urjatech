@@ -1,4 +1,5 @@
 const { collection, getDocs, query, where, orderBy } = require('firebase-admin/firestore');
+const { HttpsError } = require('firebase-functions/v2/https');
 
 class PWAAnalyticsProcessor {
   constructor(db) {
@@ -28,7 +29,7 @@ class PWAAnalyticsProcessor {
       return result;
     } catch (error) {
       console.error('[PWA Analytics Function] Failed to get analytics data:', error);
-      throw new functions.https.HttpsError('internal', 'Failed to retrieve analytics data.', error.message);
+      throw new HttpsError('internal', 'Failed to retrieve analytics data.', error.message);
     }
   }
 

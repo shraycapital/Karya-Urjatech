@@ -16,6 +16,7 @@ const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
 const csvParser = require('csv-parser');
 const { onCall } = require("firebase-functions/v2/https");
+const { HttpsError } = require("firebase-functions/v2/https");
 
 const { PWAAnalyticsProcessor } = require('./pwaAnalyticsProcessor');
 
@@ -1135,7 +1136,7 @@ exports.getPWAAnalytics = onCall({
   const { startDate, endDate, userIds } = request.data;
   
   if (!startDate || !endDate) {
-    throw new functions.https.HttpsError('invalid-argument', 'The function must be called with "startDate" and "endDate" arguments.');
+    throw new HttpsError('invalid-argument', 'The function must be called with "startDate" and "endDate" arguments.');
   }
 
   const db = admin.firestore();
@@ -1146,7 +1147,7 @@ exports.getPWAAnalytics = onCall({
     return analyticsData;
   } catch (error) {
     logger.error('Error fetching PWA analytics:', error);
-    throw new functions.https.HttpsError('internal', 'Failed to fetch PWA analytics data.', error.message);
+    throw new HttpsError('internal', 'Failed to fetch PWA analytics data.', error.message);
   }
 });
 
@@ -1173,7 +1174,7 @@ exports.generateAttendanceCSV = onCall({
         .get();
       records = snapshot.docs.map(doc => doc.data());
     } else {
-      throw new functions.https.HttpsError('invalid-argument', 'The function must be called with either "month" or "allTime" arguments.');
+      throw new HttpsError('invalid-argument', 'The function must be called with either "month" or "allTime" arguments.');
     }
 
     const headers = ['Employee ID', 'Date', 'In Time', 'Out Time', 'OT Hours'];
@@ -1192,7 +1193,7 @@ exports.generateAttendanceCSV = onCall({
 
   } catch (error) {
     logger.error('Error generating attendance CSV:', error);
-    throw new functions.https.HttpsError('internal', 'Failed to generate attendance CSV.', error.message);
+    throw new HttpsError('internal', 'Failed to generate attendance CSV.', error.message);
   }
 });
 
