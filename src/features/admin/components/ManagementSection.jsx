@@ -6,6 +6,7 @@ const PWAAnalyticsDashboard = lazy(() => import('./PWAAnalyticsDashboard'));
 const TaskManagement = lazy(() => import('./ManagementDashboard'));
 const LocationsTab = lazy(() => import('../../locations/components/LocationsTab.jsx'));
 const VoucherRedemptionDashboard = lazy(() => import('./VoucherRedemptionDashboard.jsx'));
+const LocationAnalyticsDashboard = lazy(() => import('./LocationAnalyticsDashboard'));
 
 export default function ManagementSection({ 
   currentUser, 
@@ -187,10 +188,8 @@ export default function ManagementSection({
               <span className="ml-2 text-sm text-slate-500">{t('loadingLocations') || 'Loading locations...'}</span>
             </div>
           }>
-            <LocationsTab
-              currentUser={currentUser}
+            <LocationAnalyticsDashboard
               users={users}
-              departments={departments}
               t={t}
             />
           </Suspense>
