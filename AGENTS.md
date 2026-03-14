@@ -21,7 +21,6 @@ src/
 ├── features/           # Feature-based modules
 │   ├── admin/         # Admin panel & management
 │   ├── analytics/     # Analytics dashboard
-│   ├── attendance/    # Attendance tracking
 │   ├── auth/          # Authentication
 │   ├── gamification/  # Points & leaderboards
 │   ├── locations/     # Location tracking

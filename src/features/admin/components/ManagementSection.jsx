@@ -7,6 +7,7 @@ const TaskManagement = lazy(() => import('./ManagementDashboard'));
 const LocationsTab = lazy(() => import('../../locations/components/LocationsTab.jsx'));
 const VoucherRedemptionDashboard = lazy(() => import('./VoucherRedemptionDashboard.jsx'));
 const LocationAnalyticsDashboard = lazy(() => import('./LocationAnalyticsDashboard'));
+const WeeklySummaryTab = lazy(() => import('./WeeklySummaryTab'));
 
 export default function ManagementSection({ 
   currentUser, 
@@ -111,6 +112,18 @@ export default function ManagementSection({
               📍 {t('locations') || 'Locations'}
             </button>
           )}
+          {isAdmin && (
+            <button
+              onClick={() => setActiveManagementTab('weekly-summary')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap ${
+                activeManagementTab === 'weekly-summary'
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              📅 {t('weeklySummary') || 'Weekly Summary'}
+            </button>
+          )}
         </nav>
       </div>
 
@@ -162,6 +175,7 @@ export default function ManagementSection({
             <VoucherRedemptionDashboard
               currentUser={currentUser}
               users={users}
+              tasks={tasks}
             />
           </Suspense>
         )}
@@ -190,6 +204,22 @@ export default function ManagementSection({
           }>
             <LocationAnalyticsDashboard
               users={users}
+              t={t}
+            />
+          </Suspense>
+        )}
+
+        {activeManagementTab === 'weekly-summary' && isAdmin && (
+          <Suspense fallback={
+            <div className="flex items-center justify-center p-8">
+              <div className="w-8 h-8 border-2 border-brand-600 border-t-transparent rounded-full animate-spin"></div>
+              <span className="ml-2 text-sm text-slate-500">{t('loadingWeeklySummary') || 'Loading weekly summary...'}</span>
+            </div>
+          }>
+            <WeeklySummaryTab
+              tasks={tasks}
+              users={users}
+              departments={departments}
               t={t}
             />
           </Suspense>

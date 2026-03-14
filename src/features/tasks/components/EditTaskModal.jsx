@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { STATUSES } from '../../../shared/constants';
 import { DIFFICULTY_LEVELS, DIFFICULTY_CONFIG } from '../../../shared/constants';
-import { toISTISOString } from '../../../shared/utils/date';
+import { parseFirestoreTimestamp } from '../../../shared/utils/date';
+import { Timestamp, arrayUnion } from 'firebase/firestore';
 import DeleteTaskModal from './DeleteTaskModal';
 
 export default function EditTaskModal({ task, onClose, onSave, onDelete, users, departments, currentUser, t }) {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   // Helper function to extract date only from targetDate
-  const extractDateOnly = (dateString) => {
-    if (!dateString) return '';
+  const extractDateOnly = (dateSource) => {
+    if (!dateSource) return '';
     try {
-      const date = new Date(dateString);
-      if (isNaN(date.getTime())) return '';
-      return date.toISOString().split('T')[0];
+      const date = parseFirestoreTimestamp(dateSource);
+      return date ? date.toISOString().split('T')[0] : '';
     } catch {
       return '';
     }
@@ -27,6 +27,7 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
     assignedUserIds: task.assignedUserIds || [],
     departmentId: task.departmentId || '',
     notes: task.notes || [],
+    observerIds: task.observerIds || [], // Add observer state
     isUrgent: task.isUrgent || false, // Add urgent state
     isRdNewSkill: task.isRdNewSkill || false, // Add R&D/New Skill state
     projectSkillName: task.projectSkillName || '', // Add project/skill name state
@@ -34,14 +35,39 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
+  const [observerOpen, setObserverOpen] = useState(false); // Add observer dropdown state
+  const [addObservers, setAddObservers] = useState(false); // Add observers checkbox state
   const [photos, setPhotos] = useState(task.photos || []);
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
+
+  const isCurrentUserObserver =
+    !!currentUser?.id &&
+    Array.isArray(task?.observerIds) &&
+    task.observerIds.includes(currentUser.id);
+
+  const isCurrentUserAssigned =
+    !!currentUser?.id &&
+    Array.isArray(task?.assignedUserIds) &&
+    task.assignedUserIds.includes(currentUser.id);
+
+  const isTaskCreator = !!currentUser?.id && task?.assignedById === currentUser.id;
+  const isPrivileged = ['Head', 'Management', 'Admin'].includes(currentUser?.role);
+
+  // Observer-only users may add notes/photos etc, but must not change progress/assignment/point-impacting fields.
+  const isObserverOnly = isCurrentUserObserver && !isCurrentUserAssigned && !isTaskCreator && !isPrivileged;
 
   // Get available users for the selected department
   const availableUsers = useMemo(() => {
     if (!editedTask.departmentId) return [];
     return users.filter((u) => u.departmentIds?.includes(editedTask.departmentId));
   }, [users, editedTask.departmentId]);
+
+  useEffect(() => {
+    if (isObserverOnly) {
+      setAssigneeOpen(false);
+      setObserverOpen(false);
+    }
+  }, [isObserverOnly]);
 
   useEffect(() => {
     setEditedTask({
@@ -53,11 +79,13 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
       assignedUserIds: task.assignedUserIds || [],
       departmentId: task.departmentId || '',
       notes: task.notes || [],
+      observerIds: task.observerIds || [],
       isUrgent: task.isUrgent || false,
       isRdNewSkill: task.isRdNewSkill || false,
       projectSkillName: task.projectSkillName || ''
     });
     setPhotos(task.photos || []);
+    setAddObservers(!!(task.observerIds && task.observerIds.length > 0)); // Initialize checkbox based on existing observers
   }, [task]);
 
   const handleUserCheckboxChange = (userId) => {
@@ -66,6 +94,15 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
       assignedUserIds: prev.assignedUserIds.includes(userId) 
         ? prev.assignedUserIds.filter(id => id !== userId)
         : [...prev.assignedUserIds, userId]
+    }));
+  };
+
+  const handleObserverCheckboxChange = (userId) => {
+    setEditedTask(prev => ({
+      ...prev,
+      observerIds: prev.observerIds.includes(userId)
+        ? prev.observerIds.filter(id => id !== userId)
+        : [...prev.observerIds, userId]
     }));
   };
 
@@ -140,46 +177,57 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
 
     setIsSubmitting(true);
     try {
-      // Merge description into notes if provided
-      let updatedNotes = [...(task.notes || [])];
-      if (editedTask.description && editedTask.description.trim()) {
-        updatedNotes.push({
-          text: editedTask.description.trim(),
-          type: 'edit',
-          createdAt: toISTISOString(),
-          createdBy: currentUser.id,
-          editedBy: currentUser.id,
-          editedByName: currentUser.name
-        });
-      }
+      // Append a note safely.
+      // IMPORTANT: Do NOT overwrite the full notes array because tasks may be progressively loaded
+      // with only a subset of notes, which would cause data loss.
+      const noteText = (editedTask.description || '').trim();
+      const noteToAdd = noteText
+        ? {
+            text: noteText,
+            type: 'edit',
+            createdAt: Timestamp.now(),
+            createdBy: currentUser?.id || 'unknown',
+            editedBy: currentUser?.id || 'unknown',
+            editedByName: currentUser?.name || currentUser?.username || 'Unknown',
+          }
+        : null;
 
-      const updatedTask = {
-        ...task,
-        ...editedTask,
-        notes: updatedNotes,
-        difficulty: editedTask.difficulty,
-        points: DIFFICULTY_CONFIG[editedTask.difficulty].points,
+      const patchData = {
+        id: task.id,
+        title: editedTask.title,
         photos: photos,
-        updatedAt: toISTISOString(),
-        updatedById: currentUser.id
+        ...(noteToAdd ? { notes: arrayUnion(noteToAdd) } : {}),
       };
 
-      await onSave(updatedTask);
+      if (!isObserverOnly) {
+        patchData.status = editedTask.status;
+        patchData.difficulty = editedTask.difficulty;
+        patchData.points = DIFFICULTY_CONFIG[editedTask.difficulty].points;
+        patchData.targetDate = editedTask.targetDate ? Timestamp.fromDate(new Date(`${editedTask.targetDate}T00:00:00`)) : null;
+        patchData.assignedUserIds = editedTask.assignedUserIds;
+        patchData.departmentId = editedTask.departmentId;
+        patchData.observerIds = addObservers ? (editedTask.observerIds || []) : []; // Only include observers if checkbox is checked
+        patchData.isUrgent = editedTask.isUrgent;
+        patchData.isRdNewSkill = editedTask.isRdNewSkill;
+        patchData.projectSkillName = editedTask.projectSkillName;
+      }
+
+      await onSave(patchData);
       
       // If this is a Head/Admin/Management editing a task that needs approval,
       // automatically approve it since they don't need approval themselves
       if (task.needsApproval && !task.approvedBy && !task.rejectedBy) {
-        const isApprover = currentUser.role === 'Head' || currentUser.role === 'Management' || currentUser.role === 'Admin';
+        const isApprover = ['Head', 'Management', 'Admin'].includes(currentUser.role);
         if (isApprover) {
           // Auto-approve the task
-          const approvedTask = {
-            ...updatedTask,
+          const approvalPatch = {
+            id: task.id,
             needsApproval: false,
             approvedBy: currentUser.id,
             approvedByName: currentUser.name,
-            approvedAt: new Date().toISOString()
+            approvedAt: Timestamp.fromDate(new Date()),
           };
-          await onSave(approvedTask);
+          await onSave(approvalPatch);
         }
       }
       
@@ -253,12 +301,18 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                 id="status"
                 value={editedTask.status}
                 onChange={(e) => setEditedTask(prev => ({ ...prev, status: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                disabled={isObserverOnly}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value={STATUSES.PENDING}>{t('pending') || 'Pending'}</option>
                 <option value={STATUSES.ONGOING}>{t('ongoing') || 'Ongoing'}</option>
                 <option value={STATUSES.COMPLETE}>{t('completed') || 'Completed'}</option>
               </select>
+              {isObserverOnly && (
+                <div className="mt-1 text-xs text-slate-500">
+                  Observer access: status cannot be changed.
+                </div>
+              )}
             </div>
 
             {/* Task Difficulty Selector */}
@@ -269,12 +323,13 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                   <button
                     key={key}
                     type="button"
+                    disabled={isObserverOnly}
                     onClick={() => setEditedTask(prev => ({ ...prev, difficulty: key }))}
                     className={`px-2 py-1.5 rounded-full text-xs font-medium border transition-all ${
                       editedTask.difficulty === key
                         ? `${config.color} shadow-sm scale-105`
                         : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
-                    }`}
+                    } ${isObserverOnly ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <span className="mr-1">{config.icon}</span>
                     {t(config.label.toLowerCase())} ({config.points} pts)
@@ -291,6 +346,7 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                 id="isUrgent"
                 checked={editedTask.isUrgent}
                 onChange={(e) => setEditedTask(prev => ({ ...prev, isUrgent: e.target.checked }))}
+                disabled={isObserverOnly}
                 className="mr-2 h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 rounded"
               />
               <label htmlFor="isUrgent" className="text-sm text-gray-700">
@@ -305,6 +361,7 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                 id="isRdNewSkill"
                 checked={editedTask.isRdNewSkill}
                 onChange={(e) => setEditedTask(prev => ({ ...prev, isRdNewSkill: e.target.checked }))}
+                disabled={isObserverOnly}
                 className="mr-2 h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
               />
               <label htmlFor="isRdNewSkill" className="text-sm text-gray-700">
@@ -324,7 +381,8 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                   value={editedTask.projectSkillName}
                   onChange={(e) => setEditedTask(prev => ({ ...prev, projectSkillName: e.target.value }))}
                   placeholder="Enter project or skill name..."
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  disabled={isObserverOnly}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
                 />
               </div>
             )}
@@ -337,7 +395,7 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                   ? departments 
                   : [];
               
-              const canSelectDepartment = userDepartments.length > 1 || currentUser.role === 'Admin';
+              const canSelectDepartment = !isObserverOnly && (userDepartments.length > 1 || currentUser.role === 'Admin');
               
               return canSelectDepartment ? (
                 <div>
@@ -377,8 +435,12 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                 </label>
                 <button
                   type="button"
-                  onClick={() => setAssigneeOpen(!assigneeOpen)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-left bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                  disabled={isObserverOnly}
+                  onClick={() => {
+                    if (isObserverOnly) return;
+                    setAssigneeOpen(!assigneeOpen);
+                  }}
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-md text-left bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent ${isObserverOnly ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   {editedTask.assignedUserIds.length > 0 
                     ? editedTask.assignedUserIds.map(id => availableUsers.find(u => u.id === id)?.name).filter(Boolean).join(', ')
@@ -394,6 +456,7 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                           type="checkbox"
                           checked={editedTask.assignedUserIds.includes(user.id)}
                           onChange={() => handleUserCheckboxChange(user.id)}
+                          disabled={isObserverOnly}
                           className="mr-2"
                         />
                         {user.name}
@@ -409,6 +472,76 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
               </div>
             )}
 
+            {/* Observers Section */}
+            {editedTask.departmentId && (
+              <>
+                <div className="flex items-center mt-2">
+                  <input
+                    type="checkbox"
+                    id="addObservers"
+                    checked={addObservers}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setAddObservers(checked);
+                      // Clear observerIds if checkbox is unchecked
+                      if (!checked) {
+                        setEditedTask(prev => ({ ...prev, observerIds: [] }));
+                      }
+                    }}
+                    disabled={isObserverOnly}
+                    className="mr-2 h-4 w-4 text-brand-600 focus:ring-brand-500 border-gray-300 rounded"
+                  />
+                  <label htmlFor="addObservers" className="text-sm text-gray-700">
+                    {t('addObservers') || 'Add Observers'}
+                  </label>
+                </div>
+
+                {addObservers && (
+                  <div className="relative mt-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      {t('observers') || 'Observers'}
+                    </label>
+                    <button
+                      type="button"
+                      disabled={isObserverOnly}
+                      onClick={() => {
+                        if (isObserverOnly) return;
+                        setObserverOpen(!observerOpen);
+                      }}
+                      className={`w-full px-3 py-2 border border-gray-300 rounded-md text-left bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent ${isObserverOnly ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      {editedTask.observerIds && editedTask.observerIds.length > 0 
+                        ? editedTask.observerIds.map(id => availableUsers.find(u => u.id === id)?.name).filter(Boolean).join(', ')
+                        : t('selectUsers') || 'Select users'
+                      }
+                    </button>
+                    
+                    {observerOpen && (
+                      <div className="absolute z-20 bg-white border border-gray-300 rounded-md shadow-lg mt-1 w-full max-h-48 overflow-y-auto">
+                        {availableUsers.map((user) => (
+                          <label key={user.id} className="flex items-center px-3 py-2 hover:bg-gray-100 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={editedTask.observerIds && editedTask.observerIds.includes(user.id)}
+                              onChange={() => handleObserverCheckboxChange(user.id)}
+                              disabled={isObserverOnly}
+                              className="mr-2"
+                            />
+                            {user.name}
+                          </label>
+                        ))}
+                        {availableUsers.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">
+                            {t('noUsersInDept') || 'No users in this department'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
             {/* Target Date */}
             <div>
               <label htmlFor="targetDate" className="block text-sm font-medium text-gray-700 mb-2">
@@ -419,7 +552,8 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
                 id="targetDate"
                 value={editedTask.targetDate}
                 onChange={(e) => setEditedTask(prev => ({ ...prev, targetDate: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                disabled={isObserverOnly}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
 
@@ -506,14 +640,16 @@ export default function EditTaskModal({ task, onClose, onSave, onDelete, users, 
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-200 flex-shrink-0">
-          <div className="flex justify-between">
-            <button
-              type="button"
-              onClick={handleDelete}
-              className="px-4 py-2 text-sm font-medium text-red-700 bg-red-100 border border-red-300 rounded-md hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-            >
-              {t('delete') || 'Delete'}
-            </button>
+          <div className={`flex ${isObserverOnly ? 'justify-end' : 'justify-between'}`}>
+            {!isObserverOnly && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="px-4 py-2 text-sm font-medium text-red-700 bg-red-100 border border-red-300 rounded-md hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                {t('delete') || 'Delete'}
+              </button>
+            )}
             <div className="flex gap-3">
               <button
                 type="button"

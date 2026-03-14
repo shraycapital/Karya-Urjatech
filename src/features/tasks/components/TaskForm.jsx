@@ -5,24 +5,27 @@ import RecurrencePattern from './RecurrencePattern';
 
 const ROLES = { USER: 'User', HEAD: 'Head', ADMIN: 'Admin' };
 
-export default function TaskForm({ currentUser, users, departments, onCreate, t, onCancel }) {
-  const [title, setTitle] = useState('');
+export default function TaskForm({ currentUser, users, departments, onCreate, t, onCancel, initialData }) {
+  const [title, setTitle] = useState(initialData?.title || '');
   const [dept, setDept] = useState(() => {
-    return currentUser.departmentIds?.[0] || (departments[0]?.id || '');
+    return initialData?.departmentId || currentUser.departmentIds?.[0] || (departments[0]?.id || '');
   });
-  const [assignedUserIds, setAssignedUserIds] = useState([]);
-  const [note, setNote] = useState('');
-  const [photos, setPhotos] = useState([]);
+  const [assignedUserIds, setAssignedUserIds] = useState(initialData?.assignedUserIds || []);
+  const [note, setNote] = useState(initialData?.notes?.[0]?.text || '');
+  const [observerIds, setObserverIds] = useState(initialData?.observerIds || []); // Observers (view-only)
+  const [photos, setPhotos] = useState(initialData?.photos || []);
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
-  const [difficulty, setDifficulty] = useState(DIFFICULTY_LEVELS.MEDIUM); // Default to medium
-  const [targetDate, setTargetDate] = useState(() => toISTDateString());
-  const [isUrgent, setIsUrgent] = useState(false); // Add urgent state
-  const [isScheduled, setIsScheduled] = useState(false); // Add scheduled task state
-  const [recurrencePattern, setRecurrencePattern] = useState(null); // Add recurrence pattern state
-  const [isRdNewSkill, setIsRdNewSkill] = useState(false); // Add R&D/New Skill state
-  const [projectSkillName, setProjectSkillName] = useState(''); // Add project/skill name state
+  const [observerOpen, setObserverOpen] = useState(false);
+  const [addObservers, setAddObservers] = useState(initialData?.observerIds?.length > 0);
+  const [difficulty, setDifficulty] = useState(initialData?.difficulty || DIFFICULTY_LEVELS.MEDIUM); // Default to medium
+  const [targetDate, setTargetDate] = useState(() => initialData?.targetDate || toISTDateString());
+  const [isUrgent, setIsUrgent] = useState(initialData?.isUrgent || false); // Add urgent state
+  const [isScheduled, setIsScheduled] = useState(initialData?.isScheduled || false); // Add scheduled task state
+  const [recurrencePattern, setRecurrencePattern] = useState(initialData?.recurrencePattern || null); // Add recurrence pattern state
+  const [isRdNewSkill, setIsRdNewSkill] = useState(initialData?.isRdNewSkill || false); // Add R&D/New Skill state
+  const [projectSkillName, setProjectSkillName] = useState(initialData?.projectSkillName || ''); // Add project/skill name state
   const [errors, setErrors] = useState({});
 
   const availableUsers = useMemo(() => {
@@ -47,6 +50,10 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
 
   const handleUserCheckboxChange = (userId) => {
     setAssignedUserIds((prev) => (prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]));
+  };
+
+  const handleObserverCheckboxChange = (userId) => {
+    setObserverIds((prev) => (prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]));
   };
 
   const handlePhotoChange = (e) => {
@@ -137,42 +144,43 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
     if (!dept) nextErrors.department = 'Department is required';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
-    setIsSubmitting(true);
-    try {
-      await onCreate({
-        title: title.trim(),
-        assignedUserIds,
-        assignedById: currentUser.id,
-        assignedUserRole: currentUser.role, // Pass user role for approval logic
-        departmentId: dept,
-        difficulty,
-        points: DIFFICULTY_CONFIG[difficulty].points,
-        targetDate: targetDate || toISTDateString(),
-        status: 'Pending',
-        notes: note.trim() ? [{ 
-          text: note.trim(), 
-          type: 'creation',
-          createdAt: new Date().toISOString(),
-          createdBy: currentUser.id,
-          editedBy: currentUser.id,
-          editedByName: currentUser.name
-        }] : [],
-        photos: photos,
-        isUrgent, // Include isUrgent in submission
-        isScheduled, // Include scheduled task flag
-        recurrencePattern, // Include recurrence pattern
-        scheduledStartDate: isScheduled ? targetDate : null, // Set start date for scheduled tasks
-        isRdNewSkill, // Include R&D/New Skill flag
-        projectSkillName: isRdNewSkill ? projectSkillName : '', // Include project/skill name if R&D
-      });
+    // Close the form immediately for optimistic UI feeling
+    setTitle(''); setNote(''); setPhotos([]); setAssignedUserIds([]); setObserverIds([]); setAssigneeOpen(false); setObserverOpen(false); setAddObservers(false); setDifficulty(DIFFICULTY_LEVELS.MEDIUM); setTargetDate(toISTDateString()); setIsUrgent(false); setIsScheduled(false); setRecurrencePattern(null); setIsRdNewSkill(false); setProjectSkillName('');
+    onCancel(); 
+
+    // Fire the creation process in the background
+    onCreate({
+      title: title.trim(),
+      assignedUserIds,
+      assignedById: currentUser.id,
+      assignedUserRole: currentUser.role, 
+      departmentId: dept,
+      difficulty,
+      points: DIFFICULTY_CONFIG[difficulty].points,
+      targetDate: targetDate || toISTDateString(),
+      status: 'Pending',
+      observerIds: addObservers ? observerIds : [],
+      notes: note.trim() ? [{ 
+        text: note.trim(), 
+        type: 'creation',
+        createdAt: new Date().toISOString(),
+        createdBy: currentUser.id,
+        editedBy: currentUser.id,
+        editedByName: currentUser.name
+      }] : [],
+      photos: photos,
+      isUrgent, 
+      isScheduled, 
+      recurrencePattern, 
+      scheduledStartDate: isScheduled ? targetDate : null, 
+      isRdNewSkill, 
+      projectSkillName: isRdNewSkill ? projectSkillName : '', 
+    }).then(() => {
       try { localStorage.setItem('kartavya_lastAssignees', JSON.stringify(assignedUserIds)); } catch {}
-      setTitle(''); setNote(''); setPhotos([]); setAssignedUserIds([]); setAssigneeOpen(false); setDifficulty(DIFFICULTY_LEVELS.MEDIUM); setTargetDate(toISTDateString()); setIsUrgent(false); setIsScheduled(false); setRecurrencePattern(null); setIsRdNewSkill(false); setProjectSkillName('');
-      onCancel(); // Close the modal after successful creation
-    } catch (err) {
+    }).catch(err => {
       console.error('Failed to create task:', err);
-    } finally {
-      setIsSubmitting(false);
-    }
+      // Optional: show a toast or alert if creation failed
+    });
   }
 
   return (
@@ -202,6 +210,7 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
               onChange={(e) => {
                 setDept(e.target.value);
                 setAssignedUserIds([]); // Clear assigned users when department changes
+                setObserverIds([]); // Clear observers when department changes
               }} 
               className="select"
             >
@@ -240,6 +249,51 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
         )}
       </div>
       
+      {/* Add Observers Checkbox */}
+      {dept && (
+        <div className="flex items-center mt-2">
+          <input
+            type="checkbox"
+            id="addObservers"
+            checked={addObservers}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setAddObservers(checked);
+              if (!checked) {
+                setObserverIds([]);
+              }
+            }}
+            className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+          />
+          <label htmlFor="addObservers" className="text-sm text-slate-700">
+            {t('addObservers') || 'Add Observers'}
+          </label>
+        </div>
+      )}
+
+      {/* Observers Section */}
+      {dept && addObservers && (
+        <div className="relative mt-2">
+          <label className="block text-sm font-medium text-slate-700 mb-1">{t('observers') || 'Observers'}</label>
+          <button type="button" onClick={() => setObserverOpen((o) => !o)} className="select text-left hover:bg-slate-50 w-full">
+            {observerIds.length > 0 ? observerIds.map(id => availableUsers.find(u => u.id === id)?.name).filter(Boolean).join(', ') : t('selectUsers') || 'Select users'}
+          </button>
+          {observerOpen && (
+            <div className="absolute z-20 bg-white border rounded-lg shadow-lg mt-1 w-full max-h-48 overflow-y-auto">
+              {availableUsers.map((user) => (
+                <label key={user.id} className="flex items-center px-3 py-2 hover:bg-gray-100 cursor-pointer">
+                  <input type="checkbox" checked={observerIds.includes(user.id)} onChange={() => handleObserverCheckboxChange(user.id)} className="mr-2" />
+                  {user.name}
+                </label>
+              ))}
+              {availableUsers.length === 0 && (
+                <div className="px-3 py-2 text-sm text-slate-500">{t('noUsersInDept')}</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Task Difficulty Selector */}
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-2">{t('taskDifficulty')}</label>
@@ -363,7 +417,14 @@ export default function TaskForm({ currentUser, users, departments, onCreate, t,
       )}
       
       <div>
-        <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="input text-sm w-full" placeholder={t('targetDate')} />
+        <input 
+          type="date" 
+          value={targetDate} 
+          onChange={(e) => setTargetDate(e.target.value)} 
+          onClick={(e) => e.target.showPicker && e.target.showPicker()}
+          className="input text-sm w-full cursor-pointer" 
+          placeholder={t('targetDate')} 
+        />
       </div>
       
       <div className="flex items-center justify-end">

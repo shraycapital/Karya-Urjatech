@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { db, auth, enablePushNotifications, onForegroundMessage } from './firebase';
 import { collection, onSnapshot, doc, addDoc, updateDoc, deleteDoc, getDocs, serverTimestamp, arrayUnion } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
@@ -13,13 +13,13 @@ import { canAccessFeature } from './shared/utils/permissions.js';
 import Section from './shared/components/Section.jsx';
 import { LogOutIcon, SettingsIcon } from './shared/components/Icons.jsx';
 import { logActivity } from './shared/utils/activityLogger.js';
-import { toISTISOString } from './shared/utils/date';
 import { useSmartRefresh } from './shared/hooks/useSmartRefresh.js';
+import { useDesktopMode } from './shared/hooks/useDesktopMode.js';
 import { initializePwaAnalytics, logPwaEvent } from './shared/utils/pwaAnalytics.js';
 import RefreshIndicator from './shared/components/RefreshIndicator.jsx';
-import { useLocationTracking } from './shared/hooks/useLocationTracker.js';
+import LocationProvider from './shared/components/LocationProvider.jsx';
 import { cleanFirestoreData } from './shared/utils/firestoreHelpers.js';
-import LocationPermissionModal from './shared/components/LocationPermissionModal.jsx';
+// import LocationPermissionModal from './shared/components/LocationPermissionModal.jsx';
 
 // Lazy load heavy components
 const ActivityLog = lazy(() => import('./features/admin/components/ActivityLog.jsx'));
@@ -33,10 +33,6 @@ const AnalyticsDashboard = lazy(() => import('./features/analytics/components/An
 const ManagementSection = lazy(() => import('./features/admin/components/ManagementSection.jsx'));
 const LocationsModal = lazy(() => import('./features/locations/components/LocationsModal.jsx'));
 const MarketTab = lazy(() => import('./features/market/components/MarketTab.jsx'));
-const AttendanceModal = lazy(() => import('./features/attendance/components/AttendanceModal.jsx'));
-const AttendancePage = lazy(() => import('./features/attendance/components/AttendancePage.jsx'));
-
-
 // ---------------------- SVG Icons ----------------------
 
 // ---------------------- Constants & Translations ----------------------
@@ -93,18 +89,17 @@ function KaryaApp() {
   }));
   const { currentUserId, isAdminPanelOpen } = appState;
   const { t, setLanguage, language } = useI18n();
+  const { isDesktopMode, toggleDesktopMode } = useDesktopMode();
   const [dashboardDeptId, setDashboardDeptId] = useState('');
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState('tasks'); // 'tasks', 'points', 'notifications'
+  const [activeTab, setActiveTab] = useState('tasks'); // 'tasks', 'points', 'market', 'department', 'management'
   const [openTaskId, setOpenTaskId] = useState(null);
   const [isLocationsModalOpen, setIsLocationsModalOpen] = useState(false);
   const [showPushBanner, setShowPushBanner] = useState(false);
   const [taskFeedback, setTaskFeedback] = useState(null);
   const [isEnablingPush, setIsEnablingPush] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
-  const [notifications, setNotifications] = useState([]);
-  const [showNotification, setShowNotification] = useState(false);
-  const [locationPermissionStatus, setLocationPermissionStatus] = useState('idle'); // idle, checking, granted, denied
+  // const [locationPermissionStatus, setLocationPermissionStatus] = useState('idle'); // idle, checking, granted, denied
 
   // Listen for online/offline changes
   useEffect(() => {
@@ -117,17 +112,6 @@ function KaryaApp() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
-
-  // Notification scheduling settings
-  const [notificationSettings, setNotificationSettings] = useState(() => {
-    const saved = localStorage.getItem('kartavya_notification_settings');
-    return saved ? JSON.parse(saved) : {
-      enabled: true,
-      reminderDays: [1, 3, 7], // Send reminders 1, 3, and 7 days before deadline
-      reminderTime: '09:00', // Time of day to send reminders
-      messageTemplate: 'Task "{taskTitle}" is due in {daysLeft} days. Please complete it on time.'
-    };
-  });
 
   // Helper: merge arrays by id without duplicates
   const mergeById = (a, b) => {
@@ -290,7 +274,7 @@ function KaryaApp() {
               });
             }
           }, 1000); // 1 second delay to let basic UI render first
-        }, { progressive: true, loadHeavyItems: false });
+        });
 
         unsubs = [unsub1, unsub2, unsub3, unsub4, unsub5];
       } catch (e) {
@@ -398,11 +382,6 @@ function KaryaApp() {
     );
   }, [currentUser]);
 
-  useLocationTracking(
-    locationPermissionStatus === 'granted' ? currentUser?.id : null,
-    locationPermissionStatus === 'granted' ? currentUserName : null
-  );
- 
   // Debug: Log task loading status
   useEffect(() => {
     console.log('Tasks state updated:', {
@@ -447,150 +426,6 @@ function KaryaApp() {
     }
   }, [currentUser]);
 
-
-  // Check for new task notifications
-  useEffect(() => {
-    if (!currentUser || !tasks.length) {
-      return;
-    }
-    
-    const myNewTasks = tasks.filter(task => 
-      task.assignedUserIds.includes(currentUser.id) && 
-      task.status === STATUSES.PENDING &&
-      !task.notifiedUsers?.includes(currentUser.id)
-    );
-    
-    if (myNewTasks.length > 0) {
-      const newNotification = {
-        id: Date.now(),
-        type: 'newTask',
-        title: t('newTaskAssigned'),
-        message: myNewTasks.length === 1 
-          ? `${t('youHaveBeenAssigned')}: "${myNewTasks[0].title}"`
-          : t('youHaveNewTasks').replace('{count}', myNewTasks.length),
-        tasks: myNewTasks,
-        taskId: myNewTasks[0].id, // Primary task ID for deep linking
-        timestamp: toISTISOString(),
-        read: false
-      };
-      
-      setNotifications(prev => [newNotification, ...prev]);
-      setShowNotification(true);
-
-      // Also show a browser/system notification if permission granted
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        try {
-          const browserNotification = new Notification(newNotification.title, {
-            body: newNotification.message,
-            icon: '/favicon.ico',
-            data: { taskId: newNotification.taskId, type: 'newTask' } // Include task data for deep linking
-          });
-          
-          // Handle click on browser notification
-          browserNotification.onclick = () => {
-            if (newNotification.taskId) {
-              handleTaskClick(newNotification.taskId);
-            }
-            browserNotification.close();
-          };
-        } catch {}
-      }
-      
-      // Play notification sound
-      try {
-        const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmGgU7k9n1unEiBC13yO/eizEIHWq+8+OWT');
-        audio.volume = 0.3;
-        audio.play().catch(() => {}); // Ignore errors if audio fails
-      } catch (e) {
-        // Ignore audio errors
-      }
-      
-      // Mark tasks as notified
-      myNewTasks.forEach(task => {
-        const updatedTask = {
-          ...task,
-          notifiedUsers: [...(task.notifiedUsers || []), currentUser.id]
-        };
-        updateTaskData(updatedTask.id, updatedTask, currentUser.id);
-      });
-    }
-  }, [tasks, currentUser]);
-
-
-  // Save notification settings to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem('kartavya_notification_settings', JSON.stringify(notificationSettings));
-  }, [notificationSettings]);
-
-
-  // Check for upcoming task deadlines and send reminders
-  useEffect(() => {
-    if (!notificationSettings.enabled || !tasks.length) return;
-
-    const checkDeadlines = () => {
-      const now = new Date();
-      const currentTime = now.getHours() * 60 + now.getMinutes();
-      const reminderTimeMinutes = parseInt(notificationSettings.reminderTime.split(':')[0]) * 60 + 
-                                 parseInt(notificationSettings.reminderTime.split(':')[1]);
-
-      // Only check once per day at the specified time
-      if (Math.abs(currentTime - reminderTimeMinutes) > 30) return;
-
-      tasks.forEach(task => {
-        if (!task.targetDate || task.status === STATUSES.COMPLETE) return;
-
-        const targetDate = new Date(task.targetDate);
-        const daysUntilDeadline = Math.ceil((targetDate - now) / (1000 * 60 * 60 * 24));
-
-        // Check if we should send a reminder today
-        if (notificationSettings.reminderDays.includes(daysUntilDeadline)) {
-          // Check if we already sent this reminder
-          const reminderKey = `reminder_${task.id}_${daysUntilDeadline}`;
-          const lastReminder = localStorage.getItem(reminderKey);
-          const today = now.toDateString();
-
-          if (lastReminder !== today) {
-            // Send reminder to all assigned users
-            task.assignedUserIds.forEach(userId => {
-              const user = users.find(u => u.id === userId);
-              if (user) {
-                const reminderMessage = notificationSettings.messageTemplate
-                  .replace('{taskTitle}', task.title)
-                  .replace('{daysLeft}', daysUntilDeadline);
-
-                const reminderNotification = {
-                  id: Date.now() + Math.random(),
-                  type: 'deadlineReminder',
-                  title: 'Task Deadline Reminder',
-                  message: reminderMessage,
-                  tasks: [task],
-                  taskId: task.id, // Task ID for deep linking
-                  timestamp: toISTISOString(),
-                  read: false,
-                  userId: userId
-                };
-
-                // Store reminder in localStorage for this user
-                const userReminders = JSON.parse(localStorage.getItem(`kartavya_notifications_${userId}`) || '[]');
-                userReminders.push(reminderNotification);
-                localStorage.setItem(`kartavya_notifications_${userId}`, JSON.stringify(userReminders));
-
-                // Mark reminder as sent
-                localStorage.setItem(reminderKey, today);
-              }
-            });
-          }
-        }
-      });
-    };
-
-    // Check deadlines every hour
-    const interval = setInterval(checkDeadlines, 60 * 60 * 1000);
-    checkDeadlines(); // Check immediately
-
-    return () => clearInterval(interval);
-  }, [tasks, users, notificationSettings]);
-
   // Helper: check if a user is in a department (only uses departmentIds)
   const isUserInDepartment = useMemo(() => (user, deptId) => {
     if (!user) return false;
@@ -613,12 +448,6 @@ function KaryaApp() {
 
   // --- UI Setters ---
   const toggleAdminPanel = () => setAppState((s) => ({ ...s, isAdminPanelOpen: !s.isAdminPanelOpen }));
-  const navigate = useNavigate();
-  const location = useLocation();
-  const toggleAttendanceModal = () => {
-    // Navigate to attendance page instead of opening modal
-    navigate('/attendance');
-  };
   
   const showTaskFeedback = (message, type = 'success') => {
     setTaskFeedback({ message, type, timestamp: Date.now() });
@@ -669,11 +498,6 @@ function KaryaApp() {
 
   // --- Firestore Mutations ---
 
-
-  const updateNotificationSettings = (newSettings) => {
-    setNotificationSettings(newSettings);
-  };
-
   // Handle task click from notifications
   const handleTaskClick = (taskId) => {
     setOpenTaskId(taskId);
@@ -721,25 +545,11 @@ function KaryaApp() {
         await updateDoc(doc(db, 'users', currentUser.id), cleanUpdateData);
         localStorage.setItem(`kartavya_push_saved_${currentUser.id}`, '1');
         setShowPushBanner(false);
-        setNotifications(prev => [{
-          id: Date.now(),
-          type: 'info',
-          title: t('notifications'),
-          message: 'Push notifications enabled on this device',
-          timestamp: toISTISOString(),
-          read: false
-        }, ...prev]);
+        showTaskFeedback('Push notifications enabled on this device', 'success');
       }
     } catch (e) {
       console.error('Enable push failed:', e);
-      setNotifications(prev => [{
-        id: Date.now(),
-        type: 'error',
-        title: t('notifications'),
-        message: 'Failed to enable push notifications',
-        timestamp: toISTISOString(),
-        read: false
-      }, ...prev]);
+      showTaskFeedback('Failed to enable push notifications', 'error');
     }
     finally {
       setIsEnablingPush(false);
@@ -867,33 +677,8 @@ function KaryaApp() {
     ? users 
     : users.filter((u) => isUserInDepartment(u, viewingDeptId));
 
-  useEffect(() => {
-    if (currentUser) {
-      setLocationPermissionStatus('checking');
-      navigator.permissions.query({ name: 'geolocation' }).then((permissionStatus) => {
-        if (permissionStatus.state === 'granted') {
-          setLocationPermissionStatus('granted');
-        } else {
-          setLocationPermissionStatus('denied');
-        }
-      });
-    }
-  }, [currentUser]);
-
-  const handleGrant = () => setLocationPermissionStatus('granted');
-  const handleDeny = () => setLocationPermissionStatus('denied');
-
-  if (locationPermissionStatus !== 'granted' && currentUser) {
-    return (
-      <LocationPermissionModal
-        onGrant={handleGrant}
-        onDeny={handleDeny}
-        isPermissionDenied={locationPermissionStatus === 'denied'}
-      />
-    );
-  }
-
   return (
+    <LocationProvider currentUser={currentUser} currentUserName={currentUserName}>
       <div className="min-h-screen bg-surface text-slate-900">
       {!isOnline && (
         <div className="bg-amber-500 text-white text-xs px-3 py-2 text-center">
@@ -913,7 +698,6 @@ function KaryaApp() {
         currentUser={currentUser}
         onLogout={handleLogout}
         onToggleAdminPanel={toggleAdminPanel}
-        onToggleAttendance={toggleAttendanceModal}
         language={language}
         setLanguage={setLanguage}
         t={t}
@@ -921,6 +705,8 @@ function KaryaApp() {
         users={users}
         departments={departments}
         onEnablePush={handleEnablePush}
+        isDesktopMode={isDesktopMode}
+        onToggleDesktopMode={toggleDesktopMode}
       />
       {/* Smart Refresh Indicator */}
       <RefreshIndicator
@@ -929,23 +715,9 @@ function KaryaApp() {
         pullDistance={pullDistance}
       />
       <Routes>
-        <Route path="/attendance" element={
-          <Suspense fallback={
-            <div className="flex items-center justify-center p-8">
-              <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-gray-600">Loading attendance...</p>
-            </div>
-          }>
-            <AttendancePage
-              currentUser={currentUser}
-              users={users}
-              t={t}
-              isAdmin={currentUser?.role === ROLES.ADMIN}
-            />
-          </Suspense>
-        } />
+        <Route path="/attendance" element={<AttendanceComingSoonPage />} />
         <Route path="/" element={
-          <main className={`mx-auto p-3 ${activeTab === 'management' ? 'max-w-none px-4 lg:px-8' : 'max-w-md'}`}>
+          <main className={`mx-auto p-3 ${activeTab === 'management' ? 'max-w-none px-4 lg:px-8' : isDesktopMode ? 'max-w-6xl' : 'max-w-md'}`}>
             {/* Tab Content */}
             {activeTab === 'tasks' && (
           <Suspense fallback={
@@ -991,6 +763,7 @@ function KaryaApp() {
               openTaskId={openTaskId}
               setOpenTaskId={setOpenTaskId}
               onTaskFeedback={showTaskFeedback}
+              isDesktopMode={isDesktopMode}
             />
           </Suspense>
         )}
@@ -1051,6 +824,7 @@ function KaryaApp() {
               departments={departments}
               tasks={tasks}
               t={t}
+              isDesktopMode={isDesktopMode}
               onUpdateTask={(patch) => {
                 if (!patch || typeof patch !== 'object') return Promise.reject(new Error('Invalid patch'));
                 const { id, ...rest } = patch;
@@ -1089,21 +863,18 @@ function KaryaApp() {
 
               
               {/* Bottom spacing for tabs */}
-              {location.pathname !== '/attendance' && <div className="h-20"></div>}
+              <div className="h-20"></div>
             </main>
           } />
       </Routes>
       
-      {/* Bottom Tabs - Hide on attendance page */}
-      {location.pathname !== '/attendance' && (
-        <Suspense fallback={
-          <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 text-center">
-            <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-          </div>
-        }>
-          <BottomTabs activeTab={activeTab} setActiveTab={setActiveTab} t={t} currentUser={currentUser} />
-        </Suspense>
-      )}
+      <Suspense fallback={
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 text-center">
+          <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+        </div>
+      }>
+        <BottomTabs activeTab={activeTab} setActiveTab={setActiveTab} t={t} currentUser={currentUser} />
+      </Suspense>
       
       {/* Task Feedback Notification */}
       {taskFeedback && (
@@ -1147,8 +918,6 @@ function KaryaApp() {
                   key={`admin-${users.length}-${departments.length}`}
                   users={users}
                   departments={departments}
-                  notificationSettings={notificationSettings}
-                  onUpdateNotificationSettings={updateNotificationSettings}
                   currentUser={currentUser}
                   t={t}
                 />
@@ -1180,10 +949,25 @@ function KaryaApp() {
       )}
 
     </div>
+    </LocationProvider>
   );
 }
 
 // ---------------------- Child Components ----------------------
+
+function AttendanceComingSoonPage() {
+  return (
+    <main className="mx-auto max-w-md p-6">
+      <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+        <div className="mb-4 text-5xl">📅</div>
+        <h1 className="text-2xl font-bold text-slate-900">Attendance Coming Soon</h1>
+        <p className="mt-3 text-sm text-slate-600">
+          The attendance system is being redesigned and will return in a future update.
+        </p>
+      </div>
+    </main>
+  );
+}
 
 function App() {
   return (

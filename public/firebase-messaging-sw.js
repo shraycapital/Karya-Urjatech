@@ -49,6 +49,7 @@ const CACHE_VERSION = 'v22-stale-while-revalidate';
 const CACHE_NAME = `app-shell-${CACHE_VERSION}`;
 const STATIC_ASSETS_RE = /\.(?:js|css|ico|png|jpg|jpeg|svg|webp|woff2?)$/i;
 const CORE_ROUTES = ['/', '/index.html', '/manifest.webmanifest', '/favicon.ico', '/icons/icon-192x192.png', '/icons/icon-512x512.png', '/screenshots/mobile.png', '/screenshots/desktop.png'];
+let hasSentUpdateNotice = false;
 
 self.addEventListener('install', (event) => {
   // Force skip waiting to immediately activate new service worker
@@ -108,60 +109,38 @@ self.addEventListener('fetch', (event) => {
             // Update cache in background
             if (freshResponse && freshResponse.ok) {
               const responseToCache = freshResponse.clone();
-              
-              // Get both cached and fresh response text for comparison
+
               return Promise.all([
                 cachedResponse ? cachedResponse.text() : Promise.resolve(''),
                 freshResponse.text()
               ]).then(([cachedText, freshText]) => {
-                // Extract content hashes or meaningful content for comparison
                 const getContentHash = (text) => {
-                  // Extract script src and link href to compare actual asset versions
                   const scriptMatches = text.match(/src="\/assets\/[^"]+\.js"/g) || [];
                   const cssMatches = text.match(/href="\/assets\/[^"]+\.css"/g) || [];
                   return [...scriptMatches, ...cssMatches].sort().join('|');
                 };
-                
+
                 const cachedHash = getContentHash(cachedText);
                 const freshHash = getContentHash(freshText);
-                
-                // Only notify if actual assets have changed (not just metadata)
                 const hasSignificantChange = cachedHash !== freshHash;
-                
+
                 return caches.open(CACHE_NAME).then((cache) => {
                   return cache.put('/index.html', responseToCache).then(() => {
-                    // Always update cache silently in background
-                    console.log('Cache updated silently');
-                    
-                    // Only show update notification for significant changes
-                    if (hasSignificantChange && cachedResponse) {
-                      // Throttle notifications - only show once per session
-                      const lastUpdateCheck = localStorage.getItem('lastUpdateCheck');
-                      const now = Date.now();
-                      const updateCooldown = 5 * 60 * 1000; // 5 minutes
-                      
-                      if (!lastUpdateCheck || (now - parseInt(lastUpdateCheck)) > updateCooldown) {
-                        localStorage.setItem('lastUpdateCheck', now.toString());
-                        
-                        // Notify clients about significant updates
-                        clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-                          clientList.forEach((client) => {
-                            client.postMessage({
-                              type: 'FRESH_CONTENT_AVAILABLE',
-                              message: 'A new version is available. Refresh to update.',
-                              significant: true
-                            });
+                    if (hasSignificantChange && cachedResponse && !hasSentUpdateNotice) {
+                      hasSentUpdateNotice = true;
+                      clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+                        clientList.forEach((client) => {
+                          client.postMessage({
+                            type: 'FRESH_CONTENT_AVAILABLE',
+                            message: 'A new version is available. Refresh to update.',
+                            significant: true
                           });
                         });
-                      }
-                    } else {
-                      // For minor changes, just log and update silently
-                      console.log('Minor changes detected, updating cache silently');
+                      });
                     }
                   });
                 });
               }).catch(() => {
-                // If comparison fails, just update cache silently
                 return caches.open(CACHE_NAME).then((cache) => {
                   return cache.put('/index.html', responseToCache);
                 });
@@ -170,7 +149,6 @@ self.addEventListener('fetch', (event) => {
             return freshResponse;
           })
           .catch(() => {
-            // If fetch fails, return cached response (already handled by returning cachedResponse immediately)
             return cachedResponse;
           });
 

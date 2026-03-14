@@ -26,6 +26,11 @@ export async function createMaterialRequest(requestData, currentUser) {
     originalAssignedUsers = [originalTask.assignedUserId];
   }
 
+  // Copy comments from original task to request task for shared comments
+  const sharedComments = originalTask.comments && Array.isArray(originalTask.comments) 
+    ? [...originalTask.comments] 
+    : [];
+
   const newRequestTask = {
     ...requestData,
     title: `${requestData.originalTaskTitle} - request`,
@@ -43,7 +48,8 @@ export async function createMaterialRequest(requestData, currentUser) {
     targetDate: requestData.expectedDeliveryDate,
     description: requestData.description,
     originalAssignedUsers,
-    notes: requestData.description ? [{ text: requestData.description, type: 'request' }] : []
+    notes: requestData.description ? [{ text: requestData.description, type: 'request' }] : [],
+    comments: sharedComments // Copy comments for shared comments feature
   };
 
   // Create the request task

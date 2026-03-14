@@ -3,7 +3,7 @@ import { ROLES } from '../../../shared/constants';
 import DepartmentDashboard from './DepartmentDashboard.jsx';
 import Section from '../../../shared/components/Section.jsx';
 
-function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onUpdateTask, onDeleteTask, onDeleteComment }) {
+function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onUpdateTask, onDeleteTask, onDeleteComment, isDesktopMode = false }) {
   const [dashboardDeptId, setDashboardDeptId] = useState('');
   const [localTaskUpdates, setLocalTaskUpdates] = useState({});
   
@@ -93,6 +93,7 @@ function DepartmentDashboardTab({ currentUser, users, departments, tasks, t, onU
           isDeptHead={isDeptHead}
           isManager={isManager}
           allTasks={mergedTasks}
+          isDesktopMode={isDesktopMode}
         />
       </Section>
     </div>

@@ -17,8 +17,6 @@ import { cleanFirestoreData } from '../../../shared/utils/firestoreHelpers.js';
 function AdminPanel({
   users,
   departments,
-  notificationSettings,
-  onUpdateNotificationSettings,
   currentUser,
   t,
 }) {
@@ -121,14 +119,6 @@ function AdminPanel({
           ))}
         </ul>
         <AddDepartmentForm onAdd={(name) => handleAddDepartment({ name })} t={t} />
-      </div>
-      <div className="border-t pt-4">
-        <h3 className="font-semibold mb-2">{t('notificationSettings')}</h3>
-        <NotificationSettingsPanel 
-          settings={notificationSettings} 
-          onUpdate={onUpdateNotificationSettings} 
-          t={t} 
-        />
       </div>
 
       {/* Activity Log Section - Admin only - Moved to end */}
@@ -832,120 +822,6 @@ function EditableDepartmentRow({ department, users, onSave, onRemove, isDeletabl
     );
   }
   
-  function NotificationSettingsPanel({ settings, onUpdate, t }) {
-    const [localSettings, setLocalSettings] = useState(() => {
-      try {
-        if (typeof settings === 'string') return JSON.parse(settings);
-      } catch {}
-      return (
-        settings || {
-          enabled: true,
-          reminderDays: [1, 3],
-          reminderTime: '09:00',
-          messageTemplate: "‘{taskTitle}’ is due in {daysLeft} days.",
-        }
-      );
-    });
-    const [newDay, setNewDay] = useState('');
-  
-    const handleChange = (e) => {
-      const { name, value, type, checked } = e.target;
-      setLocalSettings((prev) => ({
-        ...prev,
-        [name]: type === 'checkbox' ? checked : value,
-      }));
-    };
-  
-    const addReminderDay = () => {
-      const dayNum = parseInt(newDay, 10);
-      if (isNaN(dayNum) || dayNum < 0) return;
-      setLocalSettings((prev) => ({
-        ...prev,
-        reminderDays: Array.from(new Set([...(prev.reminderDays || []), dayNum])).sort((a, b) => a - b),
-      }));
-      setNewDay('');
-    };
-  
-    const removeReminderDay = (d) => {
-      setLocalSettings((prev) => ({
-        ...prev,
-        reminderDays: (prev.reminderDays || []).filter((x) => x !== d),
-      }));
-    };
-    
-    // Simple debounced save
-    useEffect(() => {
-        const handler = setTimeout(() => {
-            onUpdate(localSettings);
-        }, 500);
-        return () => clearTimeout(handler);
-    }, [localSettings, onUpdate]);
-  
-    return (
-      <div className="space-y-3">
-        <div className="space-y-2 bg-slate-100 p-2 rounded-md">
-          <label className="flex items-center gap-2">
-            <input type="checkbox" name="enabled" checked={!!localSettings.enabled} onChange={handleChange} />
-            <span>{t('enableDeadlineReminders') || 'Enable deadline reminders'}</span>
-          </label>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-1">{t('reminderDays') || 'Reminder days (before deadline)'}</label>
-          <div className="flex items-center gap-2 mb-2">
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={newDay}
-              onChange={(e) => setNewDay(e.target.value)}
-              className="input w-24"
-              placeholder="e.g. 1"
-            />
-            <button type="button" onClick={addReminderDay} className="btn btn-secondary btn-sm">
-              {t('add') || 'Add'}
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {(localSettings.reminderDays || []).map((d) => (
-              <span key={d} className="badge badge-xs badge-outline">
-                {d} {t('days') || 'days'}
-                <button type="button" className="ml-1 text-slate-500 hover:text-red-600" onClick={() => removeReminderDay(d)}>×</button>
-              </span>
-            ))}
-            {(localSettings.reminderDays || []).length === 0 && (
-              <span className="text-xs text-slate-500">{t('noReminderDays') || 'No days added yet.'}</span>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium mb-1">{t('reminderTime') || 'Reminder time'}</label>
-            <input
-              type="time"
-              name="reminderTime"
-              value={localSettings.reminderTime || '09:00'}
-              onChange={handleChange}
-              className="input"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">{t('messageTemplate') || 'Message template'}</label>
-            <input
-              type="text"
-              name="messageTemplate"
-              value={localSettings.messageTemplate || ''}
-              onChange={handleChange}
-              className="input"
-              placeholder="e.g. ‘{taskTitle}’ is due in {daysLeft} days."
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }
-
 export default AdminPanel;
 
 

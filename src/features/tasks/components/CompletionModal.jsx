@@ -59,9 +59,18 @@ function CompletionModal({ task, onClose, onConfirm, t }) {
       })
       .catch((error) => {
         console.error('Image processing failed:', error);
-        // Fallback to original file if compression fails
+        // Fallback to original file if compression fails, but check size
         const reader = new FileReader();
-        reader.onloadend = () => setPhoto(reader.result);
+        reader.onloadend = () => {
+          const result = reader.result;
+          // Base64 length check: 1MB limit is approx 1.33M chars. safely use 1M chars (~750KB)
+          if (result.length > 1000000) {
+             alert(t('imageTooLarge', 'Image is too large and compression failed. Please try a smaller image.'));
+             setPhoto(null);
+          } else {
+             setPhoto(result);
+          }
+        };
         reader.readAsDataURL(file);
       });
   };

@@ -535,10 +535,10 @@ const MarketTab = ({ currentUser, t }) => {
                           <span className="px-2 py-0.5 text-xs bg-gray-200 text-gray-600 rounded-full">Draft</span>
                         )}
                       </div>
-                      <p className="text-sm text-slate-500">{product.points} points • {product.totalQuantity || 0} total</p>
+                      <p className="text-sm text-slate-500">{product.points} points • {Number(product.totalQuantity || 0)} total</p>
                     </div>
                     <div className="text-right">
-                      <p className="font-medium">{product.redeemedQuantity || 0} / {product.totalQuantity || '∞'}</p>
+                      <p className="font-medium">{product.redeemedQuantity || 0} / {Number(product.totalQuantity || 0)}</p>
                       <p className="text-sm text-slate-500">Redeemed</p>
                     </div>
                      <div className="flex gap-2">

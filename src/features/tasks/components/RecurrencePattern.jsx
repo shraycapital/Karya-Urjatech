@@ -50,6 +50,25 @@ export default function RecurrencePattern({
   const [endDate, setEndDate] = useState('');
   const [occurrences, setOccurrences] = useState(10);
 
+  const formatDateForInput = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().split('T')[0];
+    }
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? '' : value.toISOString().split('T')[0];
+    }
+    if (typeof value?.toDate === 'function') {
+      return value.toDate().toISOString().split('T')[0];
+    }
+    if (typeof value?.seconds === 'number') {
+      return new Date(value.seconds * 1000 + (value.nanoseconds || 0) / 1000000).toISOString().split('T')[0];
+    }
+    return '';
+  };
+
   // Initialize state with initialValue if provided
   useEffect(() => {
     if (initialValue) {
@@ -121,11 +140,12 @@ export default function RecurrencePattern({
   ]);
 
   const handleWeekdayToggle = (weekday) => {
-    setSelectedWeekdays(prev => 
-      prev.includes(weekday) 
-        ? prev.filter(w => w !== weekday)
-        : [...prev, weekday]
-    );
+    setSelectedWeekdays((prev) => {
+      if (prev.includes(weekday)) {
+        return prev.length === 1 ? prev : prev.filter((w) => w !== weekday);
+      }
+      return [...prev, weekday];
+    });
   };
 
   const formatRecurrenceSummary = () => {
@@ -349,7 +369,7 @@ export default function RecurrencePattern({
             <span className="text-sm text-slate-600 mr-4">Start:</span>
             <input
               type="date"
-              value={startDate}
+              value={formatDateForInput(startDate)}
               disabled
               className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-slate-50 text-slate-500"
             />

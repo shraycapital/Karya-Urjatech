@@ -134,10 +134,19 @@ export default function ScheduledTasksList({ currentUser, users, departments, t 
     return summary;
   };
 
-  const formatNextOccurrence = (nextOccurrence) => {
-    if (!nextOccurrence) return 'Not scheduled';
+  const formatNextOccurrence = (scheduledTask) => {
+    if (!scheduledTask?.nextOccurrence) {
+      if (
+        scheduledTask?.isActive &&
+        scheduledTask?.recurrencePattern?.type === 'monthly' &&
+        scheduledTask?.recurrencePattern?.monthlyType === 'regenerate'
+      ) {
+        return 'After current task is completed';
+      }
+      return 'Not scheduled';
+    }
     
-    const date = nextOccurrence.toDate ? nextOccurrence.toDate() : new Date(nextOccurrence);
+    const date = scheduledTask.nextOccurrence.toDate ? scheduledTask.nextOccurrence.toDate() : new Date(scheduledTask.nextOccurrence);
     const now = new Date();
     const diffTime = date - now;
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -231,7 +240,12 @@ export default function ScheduledTasksList({ currentUser, users, departments, t 
 
   const handleSaveScheduledTask = async (updatedTask) => {
     try {
-      await updateScheduledTask(updatedTask.id, updatedTask, currentUser.id, currentUser.name);
+      const { id, ...updates } = updatedTask || {};
+      if (!id) {
+        throw new Error('Scheduled task identifier is missing. Unable to save changes.');
+      }
+
+      await updateScheduledTask(id, updates, currentUser.id, currentUser.name);
       
       if (onTaskFeedback) {
         onTaskFeedback('Scheduled task updated successfully!', 'success');
@@ -357,7 +371,7 @@ export default function ScheduledTasksList({ currentUser, users, departments, t 
 
                 <div className="flex items-center gap-2">
                   <CalendarIcon size={14} className="text-green-500" />
-                  <span>Next: {formatNextOccurrence(scheduledTask.nextOccurrence)}</span>
+                  <span>Next: {formatNextOccurrence(scheduledTask)}</span>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -368,7 +382,7 @@ export default function ScheduledTasksList({ currentUser, users, departments, t 
                 <div className="text-xs text-slate-500">
                   <div>Assigned to: {getAssignedUserNames(scheduledTask.assignedUserIds)}</div>
                   <div>Department: {getDepartmentName(scheduledTask.departmentId)}</div>
-                  <div>Difficulty: {DIFFICULTY_CONFIG[scheduledTask.difficulty]?.label || scheduledTask.difficulty} ({scheduledTask.points} pts)</div>
+                  <div>Difficulty: {DIFFICULTY_CONFIG[scheduledTask.difficulty]?.label || scheduledTask.difficulty} ({scheduledTask.points || DIFFICULTY_CONFIG[scheduledTask.difficulty]?.points || 0} pts)</div>
                 </div>
               </div>
             </div>

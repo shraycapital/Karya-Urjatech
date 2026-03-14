@@ -1,13 +1,29 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
+import { arrayUnion } from 'firebase/firestore';
 import { STATUSES } from '../../../shared/constants';
 
 export default function useTaskActions({ tasks, onUpdateTask, onLogActivity, t, currentUser }) {
   const [optimistic, setOptimistic] = useState({}); // id -> partial task overrides
   const [completionModalTask, setCompletionModalTask] = useState(null);
+  const [unfinishedModalTask, setUnfinishedModalTask] = useState(null);
   const [confettiKey, setConfettiKey] = useState(0);
 
-  // Clear optimistic overrides whenever upstream tasks change
-  useEffect(() => { setOptimistic({}); }, [tasks]);
+  // Reconcile optimistic updates when tasks change
+  useEffect(() => {
+    setOptimistic(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [id, patch] of Object.entries(next)) {
+        const upstreamTask = tasks.find(t => t.id === id);
+        // If upstream has caught up to our optimistic status, or task was deleted, clear the override
+        if (!upstreamTask || upstreamTask.status === patch.status) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tasks]);
 
   const nextStatus = useCallback((status) => {
     if (status === STATUSES.PENDING) return STATUSES.ONGOING;
@@ -17,6 +33,7 @@ export default function useTaskActions({ tasks, onUpdateTask, onLogActivity, t, 
   }, []);
 
   const handleFinishClick = useCallback((task) => setCompletionModalTask(task), []);
+  const handleUnfinishClick = useCallback((task) => setUnfinishedModalTask(task), []);
 
   const handleCompleteSubmit = useCallback((taskId, completionData) => {
     const task = tasks.find((t) => t.id === taskId);
@@ -64,15 +81,65 @@ export default function useTaskActions({ tasks, onUpdateTask, onLogActivity, t, 
       });
     }
 
-    onUpdateTask({
+    const updates = {
       id: taskId,
       status: STATUSES.COMPLETE,
       // Let the API handle completedAt with serverTimestamp for consistency
-      notes: newNote ? [...(task.notes || []), newNote] : task.notes || [],
-      photos: newPhoto ? [...(task.photos || []), newPhoto] : task.photos || [],
-    });
+    };
+
+    // Use arrayUnion to prevent data loss with progressive loading and large arrays
+    if (newNote) {
+      updates.notes = arrayUnion(newNote);
+    }
+    if (newPhoto) {
+      updates.photos = arrayUnion(newPhoto);
+    }
+
+    // Close the completion modal and optimistically update status immediately
     setCompletionModalTask(null);
     setConfettiKey((k) => k + 1);
+    setOptimistic((prev) => ({ ...prev, [taskId]: { status: STATUSES.COMPLETE } }));
+
+    Promise.resolve(onUpdateTask(updates))
+      .catch((error) => {
+        console.error('Failed to complete task:', error);
+        // Rollback optimistic update on failure
+        setOptimistic((prev) => { const next = { ...prev }; delete next[taskId]; return next; });
+        alert(t('updateFailed', 'Failed to update task. Please try again.'));
+      });
+  }, [tasks, onLogActivity, onUpdateTask, STATUSES, t]);
+
+  const handleUnfinishSubmit = useCallback((taskId, data) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    const newNote = data?.note ? { text: data.note, type: 'unfinished', timestamp: new Date().toISOString() } : null;
+
+    if (onLogActivity) {
+      onLogActivity('unfinished', 'task', taskId, task.title, null, null, {
+        hasNote: !!newNote,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const updates = {
+      id: taskId,
+      status: STATUSES.UNFINISHED,
+      completedAt: null // Ensure it's not marked as completed
+    };
+
+    if (newNote) {
+      updates.notes = arrayUnion(newNote);
+    }
+
+    Promise.resolve(onUpdateTask(updates))
+      .then(() => {
+        setUnfinishedModalTask(null);
+      })
+      .catch((error) => {
+        console.error('Failed to update task:', error);
+        alert(t('updateFailed', 'Failed to update task. Please try again.'));
+      });
   }, [tasks, onLogActivity, onUpdateTask, STATUSES]);
 
   const handleCycleStatus = useCallback((task) => {
@@ -132,8 +199,12 @@ export default function useTaskActions({ tasks, onUpdateTask, onLogActivity, t, 
     setOptimistic,
     completionModalTask,
     setCompletionModalTask,
+    unfinishedModalTask,
+    setUnfinishedModalTask,
     handleFinishClick,
+    handleUnfinishClick,
     handleCompleteSubmit,
+    handleUnfinishSubmit,
     handleCycleStatus,
     confettiKey,
     setConfettiKey,

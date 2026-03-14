@@ -1,20 +1,53 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getAllRedeemedVouchers, getUserVoucherStats } from '../../../shared/utils/voucherManagement';
-import { getRedemptionSummary } from '../../../shared/utils/voucherProducts';
-import { getPointsBreakdown } from '../../../shared/utils/pointsManagement';
-import { formatDateTime } from '../../../shared/utils/date';
+import { getAllRedeemedVouchers, getUserVoucherStats, deleteVoucherAndRefund } from '../../../shared/utils/voucherManagement';
+import { getPointsBreakdown, adjustUserPoints } from '../../../shared/utils/pointsManagement';
+import { getTotalBonusPoints } from '../../../shared/utils/dailyBonus';
+import { calculateTotalLeadershipPoints, calculateTCS } from '../../../shared/utils/leadershipPoints';
+import { DIFFICULTY_CONFIG, STATUSES } from '../../../shared/constants';
 import { pwaAnalytics } from '../../../shared/utils/pwaAnalytics';
+import { db } from '../../../firebase';
+import { doc, getDoc } from 'firebase/firestore';
 
-const VoucherRedemptionDashboard = ({ users, currentUser }) => {
+const VoucherRedemptionDashboard = ({ users, currentUser, tasks = [] }) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [userStats, setUserStats] = useState([]);
   const [redemptionHistory, setRedemptionHistory] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
+  
+  // Modals
+  const [showPointsAdjustModal, setShowPointsAdjustModal] = useState(false);
+  const [selectedUserForAdjustment, setSelectedUserForAdjustment] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [selectedVoucherForDeletion, setSelectedVoucherForDeletion] = useState(null);
 
   useEffect(() => {
     loadDashboardData();
-  }, [users]);
+  }, [users, tasks]);
+
+  const calculateTaskPoints = (task) => {
+    if (!task?.assignedUserIds || !Array.isArray(task.assignedUserIds)) return 0;
+
+    const assignedUserCount = task.assignedUserIds.length || 1;
+    let basePoints = 50;
+
+    if (task.difficulty && DIFFICULTY_CONFIG[task.difficulty]) {
+      basePoints = DIFFICULTY_CONFIG[task.difficulty].points;
+    } else if (typeof task.points === 'number') {
+      basePoints = task.points;
+    }
+
+    const isRdNewSkill = task.isRdNewSkill || false;
+    if (isRdNewSkill) {
+      basePoints = basePoints * 5;
+    }
+
+    const basePointsPerUser = Math.round(basePoints / assignedUserCount);
+    const collaborationBonus = !isRdNewSkill && assignedUserCount > 1 ? Math.round(basePointsPerUser * 0.1) : 0;
+    const urgentBonus = !isRdNewSkill && task.isUrgent ? Math.round(basePointsPerUser * 0.25) : 0;
+
+    return basePointsPerUser + collaborationBonus + urgentBonus;
+  };
 
   const loadDashboardData = async () => {
     setLoading(true);
@@ -22,12 +55,29 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
       // Load user-wise stats
       const stats = await Promise.all(
         users.map(async (user) => {
-          const vouchers = await getUserVoucherStats(user.id);
-          const pointsBreakdown = getPointsBreakdown(user);
+          const freshUserSnap = await getDoc(doc(db, 'users', user.id));
+          const effectiveUser = freshUserSnap.exists()
+            ? { id: freshUserSnap.id, ...freshUserSnap.data() }
+            : user;
+          const vouchers = await getUserVoucherStats(effectiveUser.id);
+          const pointsBreakdown = getPointsBreakdown(effectiveUser);
+          const completedTasks = (tasks || []).filter(task =>
+            task?.status === STATUSES.COMPLETE &&
+            Array.isArray(task.assignedUserIds) &&
+            task.assignedUserIds.includes(effectiveUser.id)
+          );
+          const executionPoints = completedTasks.reduce((sum, task) => sum + calculateTaskPoints(task), 0);
+          const leadershipPoints = calculateTotalLeadershipPoints(tasks || [], effectiveUser.id, calculateTaskPoints).total;
+          const bonusPoints = getTotalBonusPoints(effectiveUser?.dailyBonusLedger || {});
+          const computedTcs = calculateTCS(executionPoints, leadershipPoints, bonusPoints, 0);
           return {
-            user,
+            user: effectiveUser,
             vouchers,
             points: pointsBreakdown,
+            computedTcs,
+            executionPoints,
+            leadershipPoints,
+            bonusPoints,
           };
         })
       );
@@ -70,8 +120,76 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
     }
   };
 
+  const handleAdjustPoints = (user) => {
+    setSelectedUserForAdjustment(user);
+    setShowPointsAdjustModal(true);
+  };
+
+  const handleDeleteVoucher = (voucher) => {
+    setSelectedVoucherForDeletion(voucher);
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDeleteVoucher = async (reason) => {
+    if (!selectedVoucherForDeletion) return;
+    
+    setLoading(true);
+    try {
+      const result = await deleteVoucherAndRefund(
+        selectedVoucherForDeletion.userId,
+        selectedVoucherForDeletion.id,
+        selectedVoucherForDeletion.productId,
+        selectedVoucherForDeletion.pointsSpent,
+        currentUser.id,
+        reason
+      );
+      
+      if (result.success) {
+        alert(`Voucher deleted successfully! ${result.refundedPoints} points refunded to user.`);
+        await loadDashboardData();
+      } else {
+        alert(`Error deleting voucher: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error in confirmDeleteVoucher:', error);
+      alert('Failed to delete voucher');
+    } finally {
+      setShowDeleteConfirm(false);
+      setSelectedVoucherForDeletion(null);
+      setLoading(false);
+    }
+  };
+
+  const confirmAdjustPoints = async (adjustment, reason) => {
+    if (!selectedUserForAdjustment || !adjustment || adjustment === 0) return;
+    
+    setLoading(true);
+    try {
+      const result = await adjustUserPoints(
+        selectedUserForAdjustment.user.id,
+        adjustment,
+        reason,
+        currentUser.id
+      );
+      
+      if (result.success) {
+        alert(`Points adjusted successfully! New usable points: ${result.newUsablePoints}`);
+        await loadDashboardData();
+      } else {
+        alert(`Error adjusting points: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error in confirmAdjustPoints:', error);
+      alert('Failed to adjust points');
+    } finally {
+      setShowPointsAdjustModal(false);
+      setSelectedUserForAdjustment(null);
+      setLoading(false);
+    }
+  };
+
   const totalTCS = useMemo(() => {
-    return userStats.reduce((sum, stat) => sum + (stat.user.totalTCS || 0), 0);
+    return userStats.reduce((sum, stat) => sum + (stat.computedTcs || 0), 0);
   }, [userStats]);
 
   const totalSpent = useMemo(() => {
@@ -188,7 +306,7 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
                     </div>
                     <div className="text-right">
                       <div className="font-semibold text-brand-600">{stat.vouchers.totalPointsSpent || 0} pts</div>
-                      <div className="text-xs text-gray-500">{stat.user.totalTCS || 0} TCS</div>
+                      <div className="text-xs text-gray-500">{stat.computedTcs || 0} TCS</div>
                     </div>
                   </div>
                 ))}
@@ -205,12 +323,12 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
               <thead className="bg-gray-50 border-b">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">TCS</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Usable</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total TCS Earned</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Usable Points</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expired Points</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total Vouchers</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Points Spent</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Available</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Used</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -220,12 +338,19 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
                       <div className="font-medium text-gray-900">{stat.user.name}</div>
                       <div className="text-xs text-gray-500">{stat.user.role}</div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-900">{stat.user.totalTCS || 0}</td>
-                    <td className="px-4 py-3 text-sm text-gray-900">{stat.points.usable}</td>
+                    <td className="px-4 py-3 text-sm font-semibold text-blue-600">{stat.computedTcs || 0}</td>
+                    <td className="px-4 py-3 text-sm text-green-600">{stat.points.usable}</td>
+                    <td className="px-4 py-3 text-sm text-red-600">{stat.points.expired}</td>
                     <td className="px-4 py-3 text-sm text-gray-900">{stat.vouchers.total || 0}</td>
                     <td className="px-4 py-3 text-sm text-gray-900">{stat.vouchers.totalPointsSpent || 0}</td>
-                    <td className="px-4 py-3 text-sm text-green-600">{stat.vouchers.pending + stat.vouchers.confirmed || 0}</td>
-                    <td className="px-4 py-3 text-sm text-blue-600">{stat.vouchers.used || 0}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleAdjustPoints(stat)}
+                        className="text-sm bg-brand-600 text-white px-3 py-1 rounded hover:bg-brand-700"
+                      >
+                        Adjust Points
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -238,7 +363,7 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
       {activeTab === 'history' && (
         <div className="bg-white rounded-lg border overflow-hidden">
           <div className="p-4 border-b">
-            <h3 className="font-semibold">All Voucher Redemptions</h3>
+            <h3 className="font-semibold">All Voucher Allocations and Redemptions</h3>
             <p className="text-sm text-gray-500 mt-1">Total: {redemptionHistory.length} vouchers redeemed</p>
           </div>
           {redemptionHistory.length === 0 ? (
@@ -258,6 +383,7 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Points</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -281,6 +407,14 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
                       <td className="px-4 py-3 text-sm text-gray-900">
                         {voucher.purchasedAt?.toDate?.().toLocaleString() || 
                          (voucher.purchasedAt?.seconds ? new Date(voucher.purchasedAt.seconds * 1000).toLocaleString() : 'N/A')}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => handleDeleteVoucher(voucher)}
+                          className="text-sm bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700"
+                        >
+                          Delete
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -328,6 +462,192 @@ const VoucherRedemptionDashboard = ({ users, currentUser }) => {
           )}
         </div>
       )}
+
+      {/* Points Adjustment Modal */}
+      {showPointsAdjustModal && selectedUserForAdjustment && (
+        <PointsAdjustModal
+          stat={selectedUserForAdjustment}
+          onClose={() => {
+            setShowPointsAdjustModal(false);
+            setSelectedUserForAdjustment(null);
+          }}
+          onConfirm={confirmAdjustPoints}
+        />
+      )}
+
+      {/* Delete Voucher Confirmation Modal */}
+      {showDeleteConfirm && selectedVoucherForDeletion && (
+        <DeleteVoucherModal
+          voucher={selectedVoucherForDeletion}
+          onClose={() => {
+            setShowDeleteConfirm(false);
+            setSelectedVoucherForDeletion(null);
+          }}
+          onConfirm={confirmDeleteVoucher}
+        />
+      )}
+    </div>
+  );
+};
+
+// Points Adjustment Modal Component
+const PointsAdjustModal = ({ stat, onClose, onConfirm }) => {
+  const [adjustment, setAdjustment] = useState('');
+  const [reason, setReason] = useState('');
+  const user = stat.user;
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const adjustmentNum = parseInt(adjustment, 10);
+    if (isNaN(adjustmentNum) || adjustmentNum === 0) {
+      alert('Please enter a valid points adjustment (positive or negative number)');
+      return;
+    }
+    onConfirm(adjustmentNum, reason);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg max-w-md w-full">
+        <form onSubmit={handleSubmit}>
+          <div className="flex justify-between items-center p-4 border-b">
+            <h3 className="text-lg font-semibold">Adjust Points for {user.name}</h3>
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl">
+              &times;
+            </button>
+          </div>
+          
+          <div className="p-4 space-y-4">
+            <div className="bg-blue-50 p-3 rounded">
+              <div className="text-sm text-gray-700">
+                <div className="flex justify-between mb-1">
+                  <span>Current TCS Earned:</span>
+                  <span className="font-semibold">{stat.computedTcs || 0}</span>
+                </div>
+                <div className="flex justify-between mb-1">
+                  <span>Current Usable Points:</span>
+                  <span className="font-semibold">{stat.points?.usable || 0}</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                Points Adjustment
+                <span className="text-xs text-gray-500 ml-2">(positive to add, negative to subtract)</span>
+              </label>
+              <input
+                type="number"
+                value={adjustment}
+                onChange={(e) => setAdjustment(e.target.value)}
+                className="input w-full"
+                placeholder="e.g. 100 or -50"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Reason</label>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="input w-full"
+                rows="3"
+                placeholder="Explain why you're adjusting points..."
+                required
+              ></textarea>
+            </div>
+          </div>
+
+          <div className="p-4 border-t flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="btn btn-secondary">
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary">
+              Adjust Points
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Delete Voucher Confirmation Modal
+const DeleteVoucherModal = ({ voucher, onClose, onConfirm }) => {
+  const [reason, setReason] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!reason.trim()) {
+      alert('Please provide a reason for deletion');
+      return;
+    }
+    onConfirm(reason);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg max-w-md w-full">
+        <form onSubmit={handleSubmit}>
+          <div className="flex justify-between items-center p-4 border-b">
+            <h3 className="text-lg font-semibold text-red-600">Delete Voucher</h3>
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl">
+              &times;
+            </button>
+          </div>
+          
+          <div className="p-4 space-y-4">
+            <div className="bg-yellow-50 border border-yellow-200 p-3 rounded">
+              <p className="text-sm text-yellow-800 font-medium">⚠️ Warning: This action cannot be undone</p>
+            </div>
+
+            <div className="bg-gray-50 p-3 rounded space-y-2">
+              <div className="text-sm">
+                <span className="text-gray-600">User:</span>
+                <span className="ml-2 font-semibold">{voucher.userName}</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-600">Voucher:</span>
+                <span className="ml-2 font-semibold">{voucher.productName}</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-600">Code:</span>
+                <span className="ml-2 font-mono font-semibold">{voucher.code}</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-600">Points to Refund:</span>
+                <span className="ml-2 font-semibold text-green-600">{voucher.pointsSpent}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Reason for Deletion</label>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                className="input w-full"
+                rows="3"
+                placeholder="Explain why this voucher is being deleted..."
+                required
+              ></textarea>
+            </div>
+
+            <p className="text-sm text-gray-600">
+              The voucher will be deleted and {voucher.pointsSpent} points will be refunded to the user.
+            </p>
+          </div>
+
+          <div className="p-4 border-t flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="btn btn-secondary">
+              Cancel
+            </button>
+            <button type="submit" className="btn bg-red-600 text-white hover:bg-red-700">
+              Delete & Refund
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 };

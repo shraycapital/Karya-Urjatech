@@ -3,6 +3,7 @@ import { STATUSES, DIFFICULTY_CONFIG, DIFFICULTY_LEVELS, ROLES } from '../../../
 import { formatDateTime, formatDateOnly, toSafeDate } from '../../../shared/utils/date.js';
 import EditTaskModal from '../../tasks/components/EditTaskModal.jsx';
 import useTasks from '../../tasks/hooks/useTasks.js';
+import { getRelatedTaskIds, getMergedComments } from '../../tasks/utils/sharedComments.js';
 
 export default function TaskManagement({ tasks, users, departments, currentUser, t, onTaskFeedback }) {
   // Get task operations from useTasks hook
@@ -96,18 +97,27 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
         return;
       }
 
-      // Remove the comment from the task's comments array
-      const updatedComments = (task.comments || []).filter(comment => comment.id !== commentId);
+      // Get merged comments from all related tasks
+      const mergedComments = getMergedComments(taskId, tasks);
+      // Remove the comment from the merged comments array
+      const updatedComments = mergedComments.filter(comment => comment.id !== commentId);
       
-      // Update the task with the new comments array
-      await updateTask(taskId, { comments: updatedComments }, currentUser);
+      // Get all related task IDs (original task + all request tasks)
+      const relatedTaskIds = getRelatedTaskIds(taskId, tasks);
+      
+      // Update all related tasks with the updated comments array
+      const updatePromises = relatedTaskIds.map(relatedTaskId => {
+        return updateTask(relatedTaskId, { comments: updatedComments }, currentUser);
+      });
+      
+      await Promise.all(updatePromises);
 
       // Update the selected task in the modal if it's the same task
       if (selectedTask && selectedTask.id === taskId) {
         setSelectedTask({ ...selectedTask, comments: updatedComments });
       }
 
-      console.log('Comment deleted successfully');
+      console.log('Comment deleted successfully from all related tasks');
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment. Please try again.');
@@ -259,39 +269,104 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
     );
   };
 
+  const escapeCsvValue = (value) => {
+    if (value === null || value === undefined) return '';
+    const stringValue = String(value).replace(/"/g, '""');
+    return /[",\n]/.test(stringValue) ? `"${stringValue}"` : stringValue;
+  };
+
+  const getColumnValueForCSV = (task, columnKey) => {
+    switch (columnKey) {
+      case 'title':
+        return task.title || '';
+      case 'description':
+        return task.description || '';
+      case 'department':
+        return departments.find(d => d.id === task.departmentId)?.name || '';
+      case 'assignedBy':
+        return task.assignedById ? (users.find(u => u.id === task.assignedById)?.name || '') : '';
+      case 'originalAssignedBy':
+        return task.originalAssignedById ? (users.find(u => u.id === task.originalAssignedById)?.name || '') : '';
+      case 'assignedUsers':
+        return task.assignedUserIds?.map(id => users.find(u => u.id === id)?.name).filter(Boolean).join('; ') || '';
+      case 'difficulty':
+        return task.difficulty ? `${DIFFICULTY_CONFIG[task.difficulty]?.label || task.difficulty} (${DIFFICULTY_CONFIG[task.difficulty]?.points || 0} pts)` : '';
+      case 'urgency':
+        return getUrgencyText(task);
+      case 'status':
+        return task.status || '';
+      case 'targetDate':
+        return task.targetDate ? formatDateOnly(task.targetDate) : '';
+      case 'createdAt': {
+        const d = toSafeDate(task.createdAt) || toSafeDate(task.updatedAt) || toSafeDate(task.startedAt);
+        return d ? formatDateTime(d) : '';
+      }
+      case 'startedAt': {
+        const d = toSafeDate(task.startedAt);
+        return d ? formatDateTime(d) : '';
+      }
+      case 'completedAt': {
+        const d = toSafeDate(task.completedAt);
+        return d ? formatDateTime(d) : '';
+      }
+      case 'updatedAt': {
+        const d = toSafeDate(task.updatedAt);
+        return d ? formatDateTime(d) : '';
+      }
+      case 'points':
+        return task.points !== undefined && task.points !== null ? `${task.points} pts` : '0 pts';
+      case 'isRdNewSkill':
+        return task.isRdNewSkill ? 'Yes' : 'No';
+      case 'projectSkillName':
+        return task.projectSkillName || '';
+      case 'isScheduled':
+        return task.isScheduled ? 'Yes' : 'No';
+      case 'recurrencePattern':
+        return task.recurrencePattern?.type || '';
+      case 'noteTexts':
+        return task.notes?.map((note, index) => `Note ${index + 1}: ${note?.text || ''}`).join(' | ') || '';
+      case 'notes':
+        return task.notes?.length || 0;
+      case 'comments':
+        return task.comments?.length || 0;
+      case 'photos':
+        return task.photos?.length || 0;
+      case 'hasBlockingTasks':
+        return task.hasBlockingTasks ? 'Yes' : 'No';
+      case 'needsApproval':
+        return task.needsApproval ? 'Yes' : 'No';
+      case 'approvedBy':
+        return task.approvedBy ? (users.find(u => u.id === task.approvedBy)?.name || '') : '';
+      case 'rejectedBy':
+        return task.rejectedBy ? (users.find(u => u.id === task.rejectedBy)?.name || '') : '';
+      case 'actions':
+        return '';
+      default:
+        return '';
+    }
+  };
+
   const exportToCSV = () => {
-    const headers = visibleColumnsData.map(col => col.label).join(',');
+    const maxNotesCount = filteredAndSortedTasks.reduce((max, task) => {
+      const noteCount = Array.isArray(task.notes) ? task.notes.length : 0;
+      return Math.max(max, noteCount);
+    }, 0);
+
+    const headerValues = [
+      ...visibleColumnsData.map(col => escapeCsvValue(col.label)),
+      ...Array.from({ length: maxNotesCount }, (_, index) => escapeCsvValue(`Note ${index + 1}`))
+    ];
+
     const rows = filteredAndSortedTasks.map(task => {
-      const row = visibleColumns.map(col => {
-        switch (col) {
-          case 'title':
-            return `"${task.title}"`;
-          case 'status':
-            return task.status;
-          case 'department':
-            return departments.find(d => d.id === task.departmentId)?.name || '';
-          case 'assignedBy':
-            return users.find(u => u.id === task.assignedById)?.name || '';
-          case 'assignedUsers':
-            return task.assignedUserIds?.map(id => users.find(u => u.id === id)?.name).join('; ') || '';
-          case 'urgency':
-            return getUrgencyText(task);
-          case 'difficulty':
-            return task.difficulty ? `${task.difficulty} (${task.points} pts)` : '';
-          case 'targetDate':
-            return task.targetDate ? formatDateOnly(task.targetDate) : '';
-          case 'createdAt': {
-            const d = toSafeDate(task.createdAt) || toSafeDate(task.updatedAt) || toSafeDate(task.startedAt);
-            return d ? formatDateTime(d) : 'N/A';
-          }
-          default:
-            return '';
-        }
+      const baseValues = visibleColumnsData.map(col => escapeCsvValue(getColumnValueForCSV(task, col.key)));
+      const noteValues = Array.from({ length: maxNotesCount }, (_, index) => {
+        const noteText = task.notes?.[index]?.text || '';
+        return escapeCsvValue(noteText);
       });
-      return row.join(',');
+      return [...baseValues, ...noteValues].join(',');
     });
-    
-    const csv = [headers, ...rows].join('\n');
+
+    const csv = [headerValues.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -306,6 +381,8 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
       case STATUSES.COMPLETE: return 'bg-green-100 text-green-800';
       case STATUSES.ONGOING: return 'bg-blue-100 text-blue-800';
       case STATUSES.PENDING: return 'bg-yellow-100 text-yellow-800';
+      case STATUSES.REJECTED: return 'bg-red-100 text-red-800';
+      case STATUSES.DELETED: return 'bg-gray-100 text-gray-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -341,6 +418,7 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
   const allColumns = [
     { key: 'title', label: 'Task Title', sortable: true },
     { key: 'description', label: 'Description', sortable: false },
+    { key: 'noteTexts', label: 'Notes', sortable: false },
     { key: 'department', label: 'Department', sortable: true },
     { key: 'assignedBy', label: 'Assigned By', sortable: true },
     { key: 'originalAssignedBy', label: 'Original Assigner', sortable: true },
@@ -375,6 +453,8 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
   const pendingTasks = tasks.filter(t => t.status === STATUSES.PENDING).length;
   const ongoingTasks = tasks.filter(t => t.status === STATUSES.ONGOING).length;
   const completedTasks = tasks.filter(t => t.status === STATUSES.COMPLETE).length;
+  const rejectedTasks = tasks.filter(t => t.status === STATUSES.REJECTED).length;
+  const deletedTasks = currentUser.role === ROLES.ADMIN ? tasks.filter(t => t.status === STATUSES.DELETED).length : 0;
   const urgentTasks = tasks.filter(t => t.isUrgent).length;
   const blockedTasks = tasks.filter(t => t.hasBlockingTasks).length;
 
@@ -543,7 +623,9 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                       {getFilterDisplayText('Statuses', statusFilter, [
                         { value: STATUSES.PENDING, label: 'Pending' },
                         { value: STATUSES.ONGOING, label: 'Ongoing' },
-                        { value: STATUSES.COMPLETE, label: 'Complete' }
+                        { value: STATUSES.COMPLETE, label: 'Complete' },
+                        { value: STATUSES.REJECTED, label: 'Rejected' },
+                        ...(currentUser.role === ROLES.ADMIN ? [{ value: STATUSES.DELETED, label: 'Deleted' }] : [])
                       ])}
                     </span>
                     <span className="absolute inset-y-0 right-0 flex items-center pr-2">
@@ -554,7 +636,9 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                     {[
                       { value: STATUSES.PENDING, label: 'Pending' },
                       { value: STATUSES.ONGOING, label: 'Ongoing' },
-                      { value: STATUSES.COMPLETE, label: 'Complete' }
+                      { value: STATUSES.COMPLETE, label: 'Complete' },
+                      { value: STATUSES.REJECTED, label: 'Rejected' },
+                      ...(currentUser.role === ROLES.ADMIN ? [{ value: STATUSES.DELETED, label: 'Deleted' }] : [])
                     ].map(option => (
                       <label key={option.value} className="flex items-center px-3 py-2 hover:bg-gray-100 cursor-pointer">
                         <input
@@ -778,79 +862,6 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                   <option value="asc">Oldest First</option>
                 </select>
               </div>
-
-              {/* Column Visibility Filter */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Table Columns</label>
-                <div className="relative">
-                  <button
-                    onClick={() => setOpenDropdown(openDropdown === 'columns' ? null : 'columns')}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-left flex items-center justify-between"
-                  >
-                    <span>Columns ({visibleColumns.length}/{allColumns.length})</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                  
-                  {openDropdown === 'columns' && (
-                    <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-64 overflow-y-auto">
-                      <div className="p-2 border-b">
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              const defaultColumns = ['title', 'status', 'department', 'assignedBy', 'assignedUsers', 'urgency', 'difficulty', 'targetDate', 'createdAt', 'actions'];
-                              setVisibleColumns(defaultColumns);
-                              setOpenDropdown(null);
-                            }}
-                            className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded hover:bg-blue-200"
-                          >
-                            Reset to Default
-                          </button>
-                          <button
-                            onClick={() => {
-                              setVisibleColumns(allColumns.map(col => col.key));
-                              setOpenDropdown(null);
-                            }}
-                            className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded hover:bg-green-200"
-                          >
-                            Select All
-                          </button>
-                          <button
-                            onClick={() => {
-                              setVisibleColumns(['title', 'actions']);
-                              setOpenDropdown(null);
-                            }}
-                            className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded hover:bg-gray-200"
-                          >
-                            Minimal
-                          </button>
-                        </div>
-                      </div>
-                      {allColumns.map((column) => (
-                        <label key={column.key} className="flex items-center px-3 py-2 hover:bg-gray-50 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={visibleColumns.includes(column.key)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setVisibleColumns([...visibleColumns, column.key]);
-                              } else {
-                                setVisibleColumns(visibleColumns.filter(col => col !== column.key));
-                              }
-                            }}
-                            className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                          />
-                          <span className="text-sm text-gray-700">{column.label}</span>
-                          {!column.sortable && (
-                            <span className="ml-2 text-xs text-gray-400">(not sortable)</span>
-                          )}
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
             </div>
           </div>
         )}
@@ -998,6 +1009,19 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
                               </span>
                             ) : (
                               <span className="text-sm text-gray-500">None</span>
+                            );
+                          case 'noteTexts':
+                            return task.notes && Array.isArray(task.notes) && task.notes.length > 0 ? (
+                              <div className="text-sm text-gray-700 space-y-1 max-w-sm">
+                                {task.notes.map((note, index) => (
+                                  <div key={index} className="flex gap-2">
+                                    <span className="font-medium text-gray-500">{index + 1}.</span>
+                                    <span className="flex-1 line-clamp-2">{note?.text || 'No text'}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-sm text-gray-500">No notes</span>
                             );
                           case 'notes':
                             return (
@@ -1261,16 +1285,19 @@ export default function TaskManagement({ tasks, users, departments, currentUser,
               )}
 
               {/* Comments Section */}
-              {selectedTask.comments && selectedTask.comments.length > 0 && (
+              {(() => {
+                const mergedComments = getMergedComments(selectedTask.id, tasks);
+                return mergedComments && mergedComments.length > 0;
+              })() && (
                 <div>
                   <h4 className="font-medium text-gray-900 mb-2 flex items-center gap-2">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                     </svg>
-                    Comments ({selectedTask.comments.length})
+                    Comments ({getMergedComments(selectedTask.id, tasks).length})
                   </h4>
                   <div className="space-y-3">
-                    {selectedTask.comments.map((comment) => (
+                    {getMergedComments(selectedTask.id, tasks).map((comment) => (
                       <div key={comment.id} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
                         <div className="flex items-start justify-between mb-2">
                           <div className="flex items-center gap-2">

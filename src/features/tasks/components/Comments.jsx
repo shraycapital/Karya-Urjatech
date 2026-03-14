@@ -1,6 +1,19 @@
 import React from 'react';
+import { parseFirestoreTimestamp } from '../../../shared/utils/date';
 
 export default function Comments({ comments = [], t }) {
+  // Helper to safely parse any date format
+  const getSafeDate = (dateVal) => {
+    if (!dateVal) return null;
+    // Handle Firestore Timestamp
+    if (dateVal && typeof dateVal === 'object' && dateVal.seconds) {
+      return new Date(dateVal.seconds * 1000);
+    }
+    // Handle string or number
+    const d = new Date(dateVal);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
   // Only render if there are comments
   if (comments.length === 0) {
     return null;
@@ -16,28 +29,31 @@ export default function Comments({ comments = [], t }) {
       </h4>
       
       <div className="space-y-3">
-        {comments.map((comment) => (
-          <div key={comment?.id || Math.random()} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-            <div className="flex items-start justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 bg-brand-100 rounded-full flex items-center justify-center">
-                  <span className="text-xs font-medium text-brand-700">
-                    {comment.userName?.charAt(0)?.toUpperCase() || 'U'}
+        {comments.map((comment) => {
+          const date = getSafeDate(comment.createdAt);
+          return (
+            <div key={comment?.id || Math.random()} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+              <div className="flex items-start justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 bg-brand-100 rounded-full flex items-center justify-center">
+                    <span className="text-xs font-medium text-brand-700">
+                      {comment.userName?.charAt(0)?.toUpperCase() || 'U'}
+                    </span>
+                  </div>
+                  <span className="font-medium text-sm text-gray-900">
+                    {comment.userName || 'Unknown User'}
                   </span>
                 </div>
-                <span className="font-medium text-sm text-gray-900">
-                  {comment.userName || 'Unknown User'}
+                <span className="text-xs text-gray-500">
+                  {date ? `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Unknown date'}
                 </span>
               </div>
-              <span className="text-xs text-gray-500">
-                {comment.createdAt ? `${new Date(comment.createdAt).toLocaleDateString()} ${new Date(comment.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Unknown date'}
-              </span>
+              <p className="text-sm text-gray-700 whitespace-pre-wrap">
+                {comment?.text || 'No text available'}
+              </p>
             </div>
-            <p className="text-sm text-gray-700 whitespace-pre-wrap">
-              {comment?.text || 'No text available'}
-            </p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -7,13 +7,11 @@ import RequestModal from './RequestModal.jsx';
 import CommentModal from './CommentModal.jsx';
 import useTaskActions from '../../tasks/hooks/useTaskActions.js';
 import { formatDateTime, formatDateOnly, toSafeDate } from '../../../shared/utils/date.js';
-import { loadTaskHeavyItems } from '../api/taskApi.js';
 
 export default function TaskList({
   tasks = [],
   allTasks = [],
   onUpdateTask,
-  onUpdateTaskLocal,
   deleteTask,
   onLogActivity,
   t,
@@ -26,6 +24,10 @@ export default function TaskList({
   onDeleteComment,
   openTaskId,
   showAssignedUsers = false,
+  selectionMode = false,
+  selectedTaskIds = [],
+  onToggleSelectTask = null,
+  isTaskSelectable = null,
 }) {
   const {
     STATUSES,
@@ -50,7 +52,6 @@ export default function TaskList({
   const [photoPosition, setPhotoPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [tasksWithHeavyItems, setTasksWithHeavyItems] = useState(new Set());
 
   // Auto-expand a task if openTaskId provided
   useEffect(() => {
@@ -61,48 +62,18 @@ export default function TaskList({
     }
   }, [openTaskId, tasks]);
 
-  // Progressive loading - load heavy items when task is expanded
+  // Progressive photo loading - load photos when task is expanded
   useEffect(() => {
     if (expandedTaskId && tasks.length > 0) {
       const task = tasks.find(t => t.id === expandedTaskId);
-      
-      // Load heavy items if not already loaded
-      if (task && !task._progressiveLoaded && !tasksWithHeavyItems.has(expandedTaskId)) {
-        setTasksWithHeavyItems(prev => new Set([...prev, expandedTaskId]));
-        
-        loadTaskHeavyItems([expandedTaskId]).then(heavyItemsData => {
-          if (heavyItemsData.length > 0) {
-            const heavyData = heavyItemsData[0];
-            // Update the task with heavy items via onUpdateTaskLocal (no database update)
-            if (onUpdateTaskLocal) {
-              onUpdateTaskLocal({
-                id: task.id,
-                photos: heavyData.photos,
-                comments: heavyData.comments,
-                notes: heavyData.notes,
-                _progressiveLoaded: true
-              });
-            }
-          }
-        }).catch(error => {
-          console.error('Failed to load heavy items for task:', expandedTaskId, error);
-          // Remove from loading set on error
-          setTasksWithHeavyItems(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(expandedTaskId);
-            return newSet;
-          });
-        });
-      }
-      
-      // Progressive photo loading - load photos when task is expanded
       if (task?.photos?.length > 0 && !loadedPhotos.has(expandedTaskId)) {
+        // Load photos for expanded task
         setTimeout(() => {
           setLoadedPhotos(prev => new Set([...prev, expandedTaskId]));
         }, 100);
       }
     }
-  }, [expandedTaskId, tasks, loadedPhotos, tasksWithHeavyItems, onUpdateTaskLocal]);
+  }, [expandedTaskId, tasks, loadedPhotos]);
 
   // Handle ESC key to close photo modal
   useEffect(() => {
@@ -252,6 +223,10 @@ export default function TaskList({
             t={t}
             currentUser={currentUser}
             blockingTasks={task.blockingTasks || []}
+            selectionMode={selectionMode}
+            isSelected={selectedTaskIds.includes(task.id)}
+            isSelectable={typeof isTaskSelectable === 'function' ? isTaskSelectable(task) : true}
+            onToggleSelect={onToggleSelectTask}
             onStart={() => handleCycleStatus(task)}
             onFinish={() => handleFinishClick(task)}
             onToggleExpand={() => setExpandedTaskId(expandedTaskId === task.id ? null : task.id)}
@@ -266,14 +241,13 @@ export default function TaskList({
                 t={t}
                 currentUser={currentUser}
                 onDeleteComment={onDeleteComment}
-                isLoadingComments={!task._progressiveLoaded && tasksWithHeavyItems.has(task.id)}
               >
                 <div className="mt-2 text-sm space-y-2">
                   <div><strong>{t('assigned')}:</strong> {(() => {
                     const d = toSafeDate(task.createdAt) || toSafeDate(task.updatedAt) || toSafeDate(task.startedAt);
                     return d ? formatDateTime(d) : 'N/A';
                   })()}</div>
-                  <div><strong>{t('assignedBy')}:</strong> {task.originalAssignedByName || (task.assignedById ? users.find(u => u.id === task.assignedById)?.name || 'Unknown' : 'Unknown')}</div>
+                  <div><strong>{t('assignedBy')}:</strong> {task.assignedById ? users.find(u => u.id === task.assignedById)?.name || 'Unknown' : 'Unknown'}</div>
                   {showAssignedUsers && (
                     <div><strong>{t('assignedTo')}:</strong> {task.assignedUserIds?.map(id => users.find(u => u.id === id)?.name).filter(Boolean).join(', ') || t('noUsersAssigned') || 'No users assigned'}</div>
                   )}
@@ -293,12 +267,9 @@ export default function TaskList({
                       <strong>{t('notes')}:</strong>
                       <ul className="list-disc list-inside pl-2 text-xs">
                         {task.notes.map((n, i) => (
-                          <li key={i}>
-                            {n?.text || 'No text available'} ({n?.type || 'unknown'})
-                            {n?.editedByName && (
-                              <span className="text-slate-500 ml-1">- edited by {n.editedByName}</span>
-                            )}
-                          </li>
+                          n?.text ? (
+                            <li key={i}>{n.text} ({n.type || 'note'})</li>
+                          ) : null
                         ))}
                       </ul>
                     </div>
@@ -309,16 +280,8 @@ export default function TaskList({
                       <p className="text-red-700 text-xs mt-1">{task.deleteReason}</p>
                     </div>
                   )}
-                  {/* Progressive photo loading - show different states based on loading progress */}
-                  {!task._progressiveLoaded && (
-                    <div className="mt-3">
-                      <div className="flex items-center gap-2 text-sm text-slate-500">
-                        <div className="w-4 h-4 border-2 border-slate-300 border-t-transparent rounded-full animate-spin"></div>
-                        <span>Loading photos and comments...</span>
-                      </div>
-                    </div>
-                  )}
-                  {task._progressiveLoaded && task.photos?.length > 0 && loadedPhotos.has(task.id) && (
+                  {/* Progressive photo loading - only show when expanded and loaded */}
+                  {task.photos?.length > 0 && loadedPhotos.has(task.id) && (
                     <div className="mt-3">
                       <strong className="text-sm text-slate-700">Photos ({task.photos.length})</strong>
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-1">
@@ -337,7 +300,7 @@ export default function TaskList({
                     </div>
                   )}
                   {/* Show loading placeholder for photos */}
-                  {task._progressiveLoaded && task.photos?.length > 0 && !loadedPhotos.has(task.id) && (
+                  {task.photos?.length > 0 && !loadedPhotos.has(task.id) && (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-1">
                       {task.photos.map((_, i) => (
                         <div key={i} className="h-24 w-full bg-slate-200 rounded-lg animate-pulse"></div>
@@ -345,7 +308,10 @@ export default function TaskList({
                     </div>
                   )}
                   
-                  {(currentUser?.role === 'Admin' || currentUser?.role === 'Head' || task.assignedById === currentUser?.id) && (
+                  {(currentUser?.role === 'Admin' ||
+                    currentUser?.role === 'Head' ||
+                    task.assignedById === currentUser?.id ||
+                    (Array.isArray(task.observerIds) && task.observerIds.includes(currentUser?.id))) && (
                     <button onClick={(e) => { e.stopPropagation(); setEditingTask(task); }} className="btn btn-xs btn-secondary mt-2">✏️ {t('editTask')}</button>
                   )}
                 </div>
@@ -374,8 +340,17 @@ export default function TaskList({
         <EditTaskModal
           task={editingTask}
           onClose={() => setEditingTask(null)}
-          onSave={(updated) => { onUpdateTask(updated); setEditingTask(null); }}
-          onDelete={async (taskId, deleteReason) => { if (deleteTask) { await deleteTask(taskId, deleteReason); setEditingTask(null); } }}
+          onSave={async (updated) => {
+            // IMPORTANT: return/await the promise so EditTaskModal can handle errors
+            // and avoid closing the modal on a failed save.
+            await onUpdateTask(updated);
+          }}
+          onDelete={async (taskId, deleteReason) => {
+            if (deleteTask) {
+              await deleteTask(taskId, deleteReason);
+              setEditingTask(null);
+            }
+          }}
           users={users}
           departments={departments}
           currentUser={currentUser}

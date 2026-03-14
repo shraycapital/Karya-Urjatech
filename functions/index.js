@@ -9,12 +9,10 @@
 
 const {setGlobalOptions} = require("firebase-functions");
 const {onRequest} = require("firebase-functions/https");
-const {onObjectFinalized} = require("firebase-functions/v2/storage");
 const {onDocumentCreated, onDocumentUpdated} = require("firebase-functions/v2/firestore");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
-const csvParser = require('csv-parser');
 const { onCall } = require("firebase-functions/v2/https");
 const { HttpsError } = require("firebase-functions/v2/https");
 
@@ -26,24 +24,72 @@ admin.initializeApp();
 // For cost control and region alignment with Firestore (asia-south1)
 setGlobalOptions({ maxInstances: 10, region: 'asia-south1' });
 
-// Function to send push notifications to all users
-async function sendPushNotificationToAll(title, body, data = {}) {
+// Helper: chunk array (Firestore `in` supports max 10 ids)
+function chunkArray(arr, size = 10) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+// Helper: get department head user IDs for a department
+async function getDepartmentHeadIds(departmentId) {
+  if (!departmentId) return [];
+  const db = admin.firestore();
+  const snap = await db
+    .collection('users')
+    .where('role', '==', 'Head')
+    .where('departmentIds', 'array-contains', departmentId)
+    .get();
+  return snap.docs.map((d) => d.id);
+}
+
+// Helper: fetch FCM tokens for specific user ids
+async function getTokensForUserIds(userIds = []) {
+  const db = admin.firestore();
+  const uniqueIds = [...new Set((userIds || []).filter(Boolean))];
+  if (!uniqueIds.length) return [];
+
+  const tokens = [];
+  const chunks = chunkArray(uniqueIds, 10); // Firestore 'in' limit
+  for (const chunk of chunks) {
+    const snap = await db
+      .collection('users')
+      .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+      .get();
+    snap.forEach((doc) => {
+      const data = doc.data() || {};
+      if (Array.isArray(data.fcmTokens)) {
+        tokens.push(...data.fcmTokens);
+      }
+    });
+  }
+  return tokens;
+}
+
+// Function to send push notifications; if targetUserIds provided, only notify those users
+async function sendPushNotificationToAll(title, body, data = {}, targetUserIds = null) {
   try {
     const db = admin.firestore();
     
-    // Get all users with FCM tokens
-    const usersSnapshot = await db.collection('users').get();
-    const tokens = [];
-    
-    usersSnapshot.forEach(doc => {
-      const userData = doc.data();
-      if (userData.fcmTokens && Array.isArray(userData.fcmTokens)) {
-        tokens.push(...userData.fcmTokens);
-      }
-    });
+    let tokens = [];
+
+    if (Array.isArray(targetUserIds) && targetUserIds.length > 0) {
+      tokens = await getTokensForUserIds(targetUserIds);
+    } else {
+      // Broadcast fallback (existing behavior)
+      const usersSnapshot = await db.collection('users').get();
+      usersSnapshot.forEach(doc => {
+        const userData = doc.data();
+        if (userData.fcmTokens && Array.isArray(userData.fcmTokens)) {
+          tokens.push(...userData.fcmTokens);
+        }
+      });
+    }
     
     if (tokens.length === 0) {
-      logger.info('No FCM tokens found');
+      logger.info('No FCM tokens found for target audience');
       return { success: false, message: 'No FCM tokens found' };
     }
     
@@ -139,14 +185,14 @@ exports.sendNotification = onRequest(async (request, response) => {
   }
   
   try {
-    const { title, body, data } = request.body;
+    const { title, body, data, targetUserIds } = request.body;
     
     if (!title || !body) {
       response.status(400).json({ error: 'Title and body are required' });
       return;
     }
     
-    const result = await sendPushNotificationToAll(title, body, data);
+    const result = await sendPushNotificationToAll(title, body, data, targetUserIds);
     response.json(result);
     
   } catch (error) {
@@ -163,6 +209,28 @@ exports.onTaskCreated = onDocumentCreated('tasks/{taskId}', async (event) => {
   if (!task) return;
   
   try {
+    const assignedUserIds = Array.isArray(task.assignedUserIds)
+      ? task.assignedUserIds
+      : task.assignedUserIds
+        ? [task.assignedUserIds]
+        : [];
+    const observerIds = Array.isArray(task.observerIds) ? task.observerIds : [];
+    let targetUserIds = [...new Set([...assignedUserIds, ...observerIds])];
+
+    // If self-assigned and needs approval, notify department heads for approval
+    const isSelfAssigned = assignedUserIds.includes(task.assignedById);
+    if (task.needsApproval && isSelfAssigned) {
+      const headIds = await getDepartmentHeadIds(task.departmentId);
+      if (headIds.length) {
+        targetUserIds = [...new Set([...targetUserIds, ...headIds])];
+      }
+    }
+
+    if (targetUserIds.length === 0) {
+      logger.info(`No target users for new task ${taskId}, skipping push`);
+      return;
+    }
+
     const title = 'New Task Assigned';
     const body = task.title || 'You have a new task';
     const data = {
@@ -172,7 +240,7 @@ exports.onTaskCreated = onDocumentCreated('tasks/{taskId}', async (event) => {
       department: task.departmentId || 'Unknown'
     };
     
-    await sendPushNotificationToAll(title, body, data);
+    await sendPushNotificationToAll(title, body, data, targetUserIds);
     logger.info(`Notification sent for new task: ${taskId}`);
     
   } catch (error) {
@@ -210,7 +278,20 @@ exports.onTaskStatusChanged = onDocumentUpdated('tasks/{taskId}', async (event) 
     }
     
     if (title && body) {
-      await sendPushNotificationToAll(title, body, data);
+      const assignedUserIds = Array.isArray(after.assignedUserIds)
+        ? after.assignedUserIds
+        : after.assignedUserIds
+          ? [after.assignedUserIds]
+          : [];
+      const observerIds = Array.isArray(after.observerIds) ? after.observerIds : [];
+      const targetUserIds = [...new Set([...assignedUserIds, ...observerIds])];
+
+      if (targetUserIds.length === 0) {
+        logger.info(`No target users for status change on task ${taskId}, skipping push`);
+        return;
+      }
+
+      await sendPushNotificationToAll(title, body, data, targetUserIds);
       logger.info(`Status change notification sent for task: ${taskId}`);
     }
     
@@ -227,6 +308,19 @@ exports.onRequestCreated = onDocumentCreated('tasks/{taskId}', async (event) => 
   if (!task || !task.isRequest) return;
   
   try {
+    const assignedUserIds = Array.isArray(task.assignedUserIds)
+      ? task.assignedUserIds
+      : task.assignedUserIds
+        ? [task.assignedUserIds]
+        : [];
+    const observerIds = Array.isArray(task.observerIds) ? task.observerIds : [];
+    const targetUserIds = [...new Set([...assignedUserIds, ...observerIds])];
+
+    if (targetUserIds.length === 0) {
+      logger.info(`No target users for material request ${taskId}, skipping push`);
+      return;
+    }
+
     const title = 'New Material Request';
     const body = `Request: ${task.title}`;
     const data = {
@@ -236,7 +330,7 @@ exports.onRequestCreated = onDocumentCreated('tasks/{taskId}', async (event) => 
       requestingFor: task.requestingFor || 'Unknown'
     };
     
-    await sendPushNotificationToAll(title, body, data);
+    await sendPushNotificationToAll(title, body, data, targetUserIds);
     logger.info(`Notification sent for material request: ${taskId}`);
     
   } catch (error) {
@@ -244,96 +338,125 @@ exports.onRequestCreated = onDocumentCreated('tasks/{taskId}', async (event) => 
   }
 });
 
+const SCHEDULED_WEEKDAY_INDEX = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
+
+const MONTHLY_WEEK_INDEX = {
+  first: 0,
+  second: 1,
+  third: 2,
+  fourth: 3,
+};
+
+function normalizeScheduleDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : new Date(value);
+  if (typeof value.toDate === 'function') return value.toDate();
+  if (typeof value.seconds === 'number') {
+    return new Date(value.seconds * 1000 + (value.nanoseconds || 0) / 1000000);
+  }
+  if (typeof value === 'string') {
+    const normalizedValue = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value;
+    const parsed = new Date(normalizedValue);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function getDaysInMonth(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+
+function getNthWeekdayOfMonth(year, monthIndex, weekdayName, weekdayOrder) {
+  const targetDayIndex = SCHEDULED_WEEKDAY_INDEX[weekdayName];
+  if (targetDayIndex === undefined) return null;
+
+  if (weekdayOrder === 'last') {
+    const lastDayOfMonth = new Date(year, monthIndex + 1, 0);
+    const offset = (lastDayOfMonth.getDay() - targetDayIndex + 7) % 7;
+    return new Date(year, monthIndex, lastDayOfMonth.getDate() - offset);
+  }
+
+  const firstDayOfMonth = new Date(year, monthIndex, 1);
+  const daysUntilTarget = (targetDayIndex - firstDayOfMonth.getDay() + 7) % 7;
+  const weekOffset = MONTHLY_WEEK_INDEX[weekdayOrder] ?? 0;
+  const dayOfMonth = 1 + daysUntilTarget + (weekOffset * 7);
+  const daysInMonth = getDaysInMonth(year, monthIndex);
+
+  if (dayOfMonth > daysInMonth) return null;
+  return new Date(year, monthIndex, dayOfMonth);
+}
+
+function getMonthlyOccurrenceForDate(recurrencePattern, year, monthIndex) {
+  if (recurrencePattern.monthlyType === 'weekday') {
+    return getNthWeekdayOfMonth(
+      year,
+      monthIndex,
+      recurrencePattern.monthlyWeekdayName,
+      recurrencePattern.monthlyWeekday
+    );
+  }
+
+  const dayOfMonth = Math.max(1, recurrencePattern.monthlyDay || 1);
+  const safeDay = Math.min(dayOfMonth, getDaysInMonth(year, monthIndex));
+  return new Date(year, monthIndex, safeDay);
+}
+
 // Helper function to calculate next occurrence date based on recurrence pattern
 function calculateNextOccurrence(recurrencePattern, lastOccurrence) {
-  const lastDate = new Date(lastOccurrence);
+  const lastDate = normalizeScheduleDate(lastOccurrence);
+  if (!lastDate || !recurrencePattern) return null;
+
   const nextDate = new Date(lastDate);
   
   switch (recurrencePattern.type) {
     case 'daily':
-      nextDate.setDate(lastDate.getDate() + recurrencePattern.interval);
-      break;
-      
-    case 'weekly':
-      // Find next occurrence of selected weekdays
+      nextDate.setDate(lastDate.getDate() + Math.max(1, recurrencePattern.interval || 1));
+      return nextDate;
+    case 'weekly': {
       const weekdays = recurrencePattern.weekdays || ['monday'];
-      const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      
-      let daysToAdd = 0;
-      let found = false;
-      
-      for (let i = 1; i <= 7 * recurrencePattern.interval; i++) {
-        const checkDate = new Date(lastDate);
-        checkDate.setDate(lastDate.getDate() + i);
-        const dayName = dayNames[checkDate.getDay()];
-        
-        if (weekdays.includes(dayName)) {
-          daysToAdd = i;
-          found = true;
-          break;
+      const interval = Math.max(1, recurrencePattern.interval || 1);
+
+      for (let i = 1; i <= 7 * interval; i += 1) {
+        const candidate = new Date(lastDate);
+        candidate.setDate(lastDate.getDate() + i);
+        const weekdayName = Object.keys(SCHEDULED_WEEKDAY_INDEX).find(
+          (key) => SCHEDULED_WEEKDAY_INDEX[key] === candidate.getDay()
+        );
+        if (weekdayName && weekdays.includes(weekdayName)) {
+          return candidate;
         }
       }
-      
-      if (!found) {
-        // If no weekday found in the interval, go to next week
-        nextDate.setDate(lastDate.getDate() + (7 * recurrencePattern.interval));
-      } else {
-        nextDate.setDate(lastDate.getDate() + daysToAdd);
-      }
-      break;
-      
-    case 'monthly':
-      if (recurrencePattern.monthlyType === 'day') {
-        nextDate.setMonth(lastDate.getMonth() + recurrencePattern.interval);
-        // Handle day overflow (e.g., Jan 31 -> Feb 28/29)
-        const targetDay = recurrencePattern.monthlyDay;
-        const daysInMonth = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0).getDate();
-        nextDate.setDate(Math.min(targetDay, daysInMonth));
-      } else if (recurrencePattern.monthlyType === 'weekday') {
-        nextDate.setMonth(lastDate.getMonth() + recurrencePattern.interval);
-        // Find the nth weekday of the month
-        const weekOptions = ['first', 'second', 'third', 'fourth', 'last'];
-        const weekIndex = weekOptions.indexOf(recurrencePattern.monthlyWeekday);
-        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-        const targetDayName = recurrencePattern.monthlyWeekdayName;
-        const targetDayIndex = dayNames.indexOf(targetDayName);
-        
-        // Set to first day of month
-        nextDate.setDate(1);
-        
-        // Find first occurrence of target weekday
-        while (nextDate.getDay() !== targetDayIndex) {
-          nextDate.setDate(nextDate.getDate() + 1);
-        }
-        
-        // Add weeks based on weekIndex
-        if (weekIndex === 4) { // last
-          // Go to last week of month
-          const lastDay = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0);
-          const lastWeekStart = new Date(lastDay);
-          lastWeekStart.setDate(lastDay.getDate() - lastDay.getDay() + targetDayIndex);
-          if (lastWeekStart.getMonth() === nextDate.getMonth()) {
-            nextDate.setTime(lastWeekStart.getTime());
-          }
-        } else {
-          nextDate.setDate(nextDate.getDate() + (weekIndex * 7));
-        }
-      } else if (recurrencePattern.monthlyType === 'regenerate') {
-        // For regenerate, we don't calculate next occurrence here
-        // It will be handled when the task is completed
+
+      nextDate.setDate(lastDate.getDate() + (7 * interval));
+      return nextDate;
+    }
+    case 'monthly': {
+      if (recurrencePattern.monthlyType === 'regenerate') {
         return null;
       }
-      break;
-      
+
+      const interval = Math.max(1, recurrencePattern.interval || 1);
+      const candidateMonth = new Date(lastDate.getFullYear(), lastDate.getMonth() + interval, 1);
+      return getMonthlyOccurrenceForDate(
+        recurrencePattern,
+        candidateMonth.getFullYear(),
+        candidateMonth.getMonth()
+      );
+    }
     case 'yearly':
-      nextDate.setFullYear(lastDate.getFullYear() + recurrencePattern.interval);
-      break;
-      
+      nextDate.setFullYear(lastDate.getFullYear() + Math.max(1, recurrencePattern.interval || 1));
+      return nextDate;
     default:
       return null;
   }
-  
-  return nextDate;
 }
 
 // Helper function to check if recurrence should end
@@ -421,6 +544,7 @@ exports.processScheduledTasksHttp = onRequest(async (request, response) => {
           title: scheduledTask.title,
           description: scheduledTask.description || '',
           assignedUserIds,
+          observerIds: Array.isArray(scheduledTask.observerIds) ? scheduledTask.observerIds : [],
           assignedById: scheduledTask.assignedById,
           assignedByName: scheduledTask.assignedByName,
           departmentId: scheduledTask.departmentId,
@@ -431,6 +555,8 @@ exports.processScheduledTasksHttp = onRequest(async (request, response) => {
           notes: scheduledTask.notes || [],
           photos: scheduledTask.photos || [],
           isUrgent: scheduledTask.isUrgent || false,
+          isRdNewSkill: scheduledTask.isRdNewSkill || false,
+          projectSkillName: scheduledTask.projectSkillName || '',
           isScheduled: false, // This is the actual task, not the schedule
           parentScheduledTaskId: scheduledTaskId,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -443,7 +569,7 @@ exports.processScheduledTasksHttp = onRequest(async (request, response) => {
         tasksToCreate.push({
           id: taskRef.id,
           title: taskData.title,
-          assignedUserIds: taskData.assignedUserIds
+          targetUserIds: [...new Set([...(taskData.assignedUserIds || []), ...(taskData.observerIds || [])])]
         });
         
         // Calculate next occurrence
@@ -476,12 +602,24 @@ exports.processScheduledTasksHttp = onRequest(async (request, response) => {
             });
           }
         } else {
-          // No next occurrence (e.g., regenerate type), mark as inactive
-          batch.update(doc.ref, {
-            isActive: false,
-            endedAt: admin.firestore.FieldValue.serverTimestamp(),
-            lastProcessedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
+          if (
+            scheduledTask.recurrencePattern?.type === 'monthly' &&
+            scheduledTask.recurrencePattern?.monthlyType === 'regenerate'
+          ) {
+            // Regenerate schedules stay active and wait for the generated task to complete.
+            batch.update(doc.ref, {
+              nextOccurrence: null,
+              occurrenceCount: admin.firestore.FieldValue.increment(1),
+              lastProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+              endedAt: null,
+            });
+          } else {
+            batch.update(doc.ref, {
+              isActive: false,
+              endedAt: admin.firestore.FieldValue.serverTimestamp(),
+              lastProcessedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+          }
         }
         
       } catch (error) {
@@ -508,7 +646,7 @@ exports.processScheduledTasksHttp = onRequest(async (request, response) => {
           title: task.title
         };
         
-        await sendPushNotificationToAll(title, body, data);
+        await sendPushNotificationToAll(title, body, data, task.targetUserIds);
       } catch (error) {
         logger.error(`Error sending notification for recurring task ${task.id}:`, error);
       }
@@ -557,9 +695,10 @@ exports.onTaskCompleted = onDocumentUpdated('tasks/{taskId}', async (event) => {
         
         // Update the scheduled task with new next occurrence
         await scheduledTaskRef.update({
+          isActive: true,
           nextOccurrence: admin.firestore.Timestamp.fromDate(nextOccurrence),
-          occurrenceCount: admin.firestore.FieldValue.increment(1),
-          lastProcessedAt: admin.firestore.FieldValue.serverTimestamp()
+          lastProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+          endedAt: null
         });
         
         logger.info(`Updated regenerate scheduled task ${after.parentScheduledTaskId} for next occurrence`);
@@ -1015,119 +1154,6 @@ function getBonusPointsInRange(bonusLedger, startDate, endDate) {
   return total;
 }
 
-// Storage-triggered CSV import for large attendance files
-// Upload to gs://<bucket>/attendance_imports/<any>.csv
-// Temporarily disabled due to storage bucket region configuration issue
-/*
-exports.importAttendanceCsv = onObjectFinalized(async (event) => {
-  const file = event.data;
-  const bucketName = file.bucket;
-  const name = file.name || '';
-
-  try {
-    // Only process files under attendance_imports/ and ending with .csv
-    if (!name.startsWith('attendance_imports/') || !name.toLowerCase().endsWith('.csv')) {
-      logger.info(`Skipping non-attendance file: ${name}`);
-      return;
-    }
-
-    const storage = admin.storage().bucket(bucketName);
-    const db = admin.firestore();
-    const bulkWriter = db.bulkWriter();
-    let processed = 0;
-    let skipped = 0;
-
-    await new Promise((resolve, reject) => {
-      storage.file(name)
-        .createReadStream()
-        .on('error', (err) => reject(err))
-        .pipe(csvParser())
-        .on('data', (row) => {
-          try {
-            // Normalize headers similar to UI importer
-            const employeeId = String(
-              row['imp_id'] || row['IMP. ID'] || row['EMP ID'] || row['EMPID'] || row['employeeId'] || row['Employee ID'] || row['Emp Id'] || row['EmpID'] || ''
-            ).trim();
-            const dateRaw = row['date'] || row['Date'] || row['DATE'] || '';
-            const inTime = String(row['in_time'] || row['In time'] || row['In Time'] || row['INTIME'] || row['IN'] || row['inTime'] || '').trim();
-            const outTime = String(row['out_time'] || row['Out time'] || row['Out Time'] || row['OUTTIME'] || row['OUT'] || row['outTime'] || '').trim();
-            const ot = row['ot_time'] || row['OT hours'] || row['OT Hours'] || row['OT'] || row['Overtime'] || row['otHours'] || '';
-
-            const toIsoDate = (x) => {
-              if (!x) return '';
-              const s = String(x).trim();
-              if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-              let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-              if (m) {
-                const d = m[1].padStart(2, '0');
-                const mo = m[2].padStart(2, '0');
-                const y = m[3].length === 2 ? `20${m[3]}` : m[3];
-                return `${y}-${mo}-${d}`;
-              }
-              m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/);
-              if (m) {
-                const d = m[1].padStart(2, '0');
-                const mo = m[2].padStart(2, '0');
-                const y = m[3].length === 2 ? `20${m[3]}` : m[3];
-                return `${y}-${mo}-${d}`;
-              }
-              return s;
-            };
-
-            const parseOt = (x) => {
-              if (typeof x === 'number') return x;
-              const s = String(x || '').trim();
-              if (!s) return 0;
-              const tm = s.match(/^(\d+):(\d+)$/);
-              if (tm) {
-                const h = parseInt(tm[1]);
-                const mi = parseInt(tm[2]);
-                return h + (mi / 60);
-              }
-              const num = parseFloat(s.replace(',', '.'));
-              return isNaN(num) ? 0 : num;
-            };
-
-            const date = toIsoDate(dateRaw);
-            if (!employeeId || !date) { skipped++; return; }
-
-            const docId = `${employeeId}_${date}`;
-            const ref = db.collection('attendance').doc(docId);
-            bulkWriter.set(ref, {
-              employeeId,
-              date,
-              inTime,
-              outTime,
-              otHours: parseOt(ot)
-            }, { merge: true });
-            processed++;
-          } catch (e) {
-            skipped++;
-          }
-        })
-        .on('end', async () => {
-          try {
-            await bulkWriter.close();
-            logger.info(`Attendance CSV imported: ${processed} processed, ${skipped} skipped (${name})`);
-            resolve();
-          } catch (e) {
-            reject(e);
-          }
-        });
-    });
-
-    // Optionally move file to processed/ folder
-    const dest = name.replace('attendance_imports/', 'attendance_imports/processed/');
-    await admin.storage().bucket(bucketName).file(name).move(dest);
-    logger.info(`Moved imported file to ${dest}`);
-
-  } catch (error) {
-    logger.error('Error importing attendance CSV:', error);
-    throw error;
-  }
-});
-*/
-
 exports.getPWAAnalytics = onCall({
   region: 'asia-south1',
   memory: '1GB',
@@ -1151,49 +1177,4 @@ exports.getPWAAnalytics = onCall({
   }
 });
 
-exports.generateAttendanceCSV = onCall({
-  region: 'asia-south1',
-  memory: '1GB',
-  timeoutSeconds: 120,
-}, async (request) => {
-  const { month, allTime } = request.data;
-  const db = admin.firestore();
-
-  let records = [];
-  try {
-    if (allTime) {
-      const snapshot = await db.collection('attendance').get();
-      records = snapshot.docs.map(doc => doc.data());
-    } else if (month) {
-      const [year, monthNum] = month.split('-');
-      const startDate = `${year}-${monthNum}-01`;
-      const endDate = `${year}-${monthNum}-31`;
-      const snapshot = await db.collection('attendance')
-        .where('date', '>=', startDate)
-        .where('date', '<=', endDate)
-        .get();
-      records = snapshot.docs.map(doc => doc.data());
-    } else {
-      throw new HttpsError('invalid-argument', 'The function must be called with either "month" or "allTime" arguments.');
-    }
-
-    const headers = ['Employee ID', 'Date', 'In Time', 'Out Time', 'OT Hours'];
-    const csvContent = [
-      headers.join(','),
-      ...records.map(r => [
-        r.employeeId || '',
-        r.date || '',
-        r.inTime || '',
-        r.outTime || '',
-        r.otHours ?? ''
-      ].join(','))
-    ].join('\n');
-
-    return { csvContent };
-
-  } catch (error) {
-    logger.error('Error generating attendance CSV:', error);
-    throw new HttpsError('internal', 'Failed to generate attendance CSV.', error.message);
-  }
-});
 

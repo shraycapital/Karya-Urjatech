@@ -34,7 +34,7 @@ export const PERMISSIONS = {
   ACCESS_ACTIVITY_LOGS: [ROLES.ADMIN]
 };
 
-export const STATUSES = { PENDING: 'Pending', ONGOING: 'Ongoing', COMPLETE: 'Complete', DELETED: 'Deleted', REJECTED: 'Rejected' };
+export const STATUSES = { PENDING: 'Pending', ONGOING: 'Ongoing', COMPLETE: 'Complete', DELETED: 'Deleted', REJECTED: 'Rejected', UNFINISHED: 'Unfinished' };
 
 export const DIFFICULTY_LEVELS = {
   EASY: 'easy',

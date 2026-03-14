@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import TaskList from '../../tasks/components/TaskList.jsx';
+import TaskListTable from '../../tasks/components/TaskListTable.jsx';
 import { STATUSES, ROLES } from '../../../shared/constants.js';
 import { toSafeDate } from '../../../shared/utils/date.js';
 import { toISTISOString } from '../../../shared/utils/date.js';
 import { createTask } from '../../tasks/api/taskApi.js';
 import { createMaterialRequest } from '../../tasks/utils/materialRequest.js';
+import { getRelatedTaskIds, getMergedComments } from '../../tasks/utils/sharedComments.js';
 
-export default function DepartmentDashboard({ users, tasks, allUsers, departments, currentUser, onUpdateTask, onUpdateTaskLocal, onLogActivity, t, deleteTask, allTasks, onDeleteComment, dashboardDeptId, setDashboardDeptId, isAdmin, isDeptHead, isManager }) {
+export default function DepartmentDashboard({ users, tasks, allUsers, departments, currentUser, onUpdateTask, onUpdateTaskLocal, onLogActivity, t, deleteTask, allTasks, onDeleteComment, dashboardDeptId, setDashboardDeptId, isAdmin, isDeptHead, isManager, isDesktopMode = false }) {
   const [selectedUserId, setSelectedUserId] = useState('all');
   const [selectedMonths, setSelectedMonths] = useState([]);
   const [isMonthFilterOpen, setIsMonthFilterOpen] = useState(false);
@@ -33,8 +35,20 @@ export default function DepartmentDashboard({ users, tasks, allUsers, department
       createdAt: new Date().toISOString(),
     };
 
-    const updatedComments = [...(task.comments || []), newComment];
-    await onUpdateTask({ id: taskId, comments: updatedComments });
+    // Get all related task IDs (original task + all request tasks)
+    const allTasksForLookup = allTasks || tasks;
+    const relatedTaskIds = getRelatedTaskIds(taskId, allTasksForLookup);
+    
+    // Get merged comments from all related tasks
+    const mergedComments = getMergedComments(taskId, allTasksForLookup);
+    const updatedComments = [...mergedComments, newComment];
+
+    // Update all related tasks with the new comments array
+    const updatePromises = relatedTaskIds.map(relatedTaskId => {
+      return onUpdateTask({ id: relatedTaskId, comments: updatedComments });
+    });
+    
+    await Promise.all(updatePromises);
   };
 
   const handleCreateRequest = async (requestData) => {
@@ -114,8 +128,106 @@ export default function DepartmentDashboard({ users, tasks, allUsers, department
     setSelectedMonths(prev => prev.includes(monthValue) ? prev.filter(m => m !== monthValue) : [...prev, monthValue]);
   };
 
+  const TaskListComponent = isDesktopMode ? TaskListTable : TaskList;
+
   return (
-    <div className="space-y-3">
+    <div className={`space-y-3 ${isDesktopMode ? 'flex flex-col lg:flex-row gap-4' : ''}`}>
+      {isDesktopMode ? (
+        <>
+          {/* Desktop: Sidebar filters */}
+          <aside className="lg:w-56 shrink-0 space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-2">{t('viewDept') || 'Department'}</label>
+              <select value={dashboardDeptId} onChange={(e) => setDashboardDeptId(e.target.value)} className="select w-full">
+                {isAdmin && <option value="all">{t('allDepartments')}</option>}
+                {(isAdmin ? departments : departments.filter(d => currentUser.departmentIds?.includes(d.id))).map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-2">{t('filterByUser')}</label>
+              <select value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)} className="select w-full">
+                <option value="all">{t('allUsers')}</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-2">{t('filterByStatus') || 'Status'}</label>
+              <div className="flex flex-wrap gap-1">
+                <button onClick={() => setStatusFilter([])} className={`rounded px-2 py-1 text-xs font-medium ${statusFilter.length === 0 ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>All</button>
+                <button onClick={() => setStatusFilter(prev => prev.includes(STATUSES.PENDING) ? prev.filter(s => s !== STATUSES.PENDING) : [...prev, STATUSES.PENDING])} className={`rounded px-2 py-1 text-xs font-medium ${statusFilter.includes(STATUSES.PENDING) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Pending</button>
+                <button onClick={() => setStatusFilter(prev => prev.includes(STATUSES.ONGOING) ? prev.filter(s => s !== STATUSES.ONGOING) : [...prev, STATUSES.ONGOING])} className={`rounded px-2 py-1 text-xs font-medium ${statusFilter.includes(STATUSES.ONGOING) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Ongoing</button>
+                <button onClick={() => setStatusFilter(prev => prev.includes(STATUSES.COMPLETE) ? prev.filter(s => s !== STATUSES.COMPLETE) : [...prev, STATUSES.COMPLETE])} className={`rounded px-2 py-1 text-xs font-medium ${statusFilter.includes(STATUSES.COMPLETE) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Done</button>
+              </div>
+            </div>
+            <div className="relative month-filter-container">
+              <label className="block text-xs font-medium text-slate-500 mb-2">{t('filterByMonth')}</label>
+              <button onClick={() => setIsMonthFilterOpen(!isMonthFilterOpen)} className="select text-left w-full">
+                {selectedMonths.length === 0 ? t('allMonths') : selectedMonths.map(m => monthOptions.find(opt => opt.value === m)?.label).join(', ')}
+              </button>
+              {isMonthFilterOpen && (
+                <div className="absolute z-10 top-full mt-1 w-full bg-white border rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                  {monthOptions.map(month => (
+                    <label key={month.value} className="flex items-center p-2 hover:bg-slate-50 text-sm">
+                      <input type="checkbox" checked={selectedMonths.includes(month.value)} onChange={() => handleMonthToggle(month.value)} className="mr-2" />
+                      {month.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            {(searchQuery || selectedUserId !== 'all' || selectedMonths.length > 0 || statusFilter.length > 0) && (
+              <button
+                onClick={() => { setSearchQuery(''); setSelectedUserId('all'); setSelectedMonths([]); setStatusFilter([STATUSES.PENDING, STATUSES.ONGOING]); }}
+                className="text-sm text-slate-500 hover:text-slate-700 underline"
+              >
+                Clear all filters
+              </button>
+            )}
+          </aside>
+          {/* Desktop: Main - search + table */}
+          <main className="flex-1 min-w-0 space-y-3">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder={t('searchTasks') || 'Search tasks...'}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full px-4 py-2 pl-10 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              </div>
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600">
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              )}
+            </div>
+            <TaskListComponent
+              tasks={filteredTasks}
+              allTasks={allTasks || tasks}
+              onUpdateTask={onUpdateTask}
+              onUpdateTaskLocal={onUpdateTaskLocal}
+              users={allUsers}
+              departments={departments}
+              t={t}
+              currentUser={currentUser}
+              isReadOnly={false}
+              onLogActivity={onLogActivity}
+              deleteTask={deleteTask}
+              onAddComment={handleAddComment}
+              onDeleteComment={onDeleteComment}
+              onCreateRequest={handleCreateRequest}
+              showAssignedUsers={true}
+            />
+          </main>
+        </>
+      ) : (
+      <>
       {/* Status Filter Buttons - Top Priority */}
       <div className="mb-3">
         <div className="flex flex-wrap gap-1.5">
@@ -216,25 +328,27 @@ export default function DepartmentDashboard({ users, tasks, allUsers, department
             </span>
           </button>
 
-          <button
-            onClick={() => setStatusFilter(prev => prev.includes(STATUSES.DELETED) ? prev.filter(s => s !== STATUSES.DELETED) : [...prev, STATUSES.DELETED])}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200 ${
-              statusFilter.includes(STATUSES.DELETED)
-                ? 'bg-gray-600 text-white border-gray-600 shadow-sm'
-                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
-            }`}
-          >
-            <span>Deleted</span>
-            <span
-              className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none transition-colors ${
+          {currentUser.role === ROLES.ADMIN && (
+            <button
+              onClick={() => setStatusFilter(prev => prev.includes(STATUSES.DELETED) ? prev.filter(s => s !== STATUSES.DELETED) : [...prev, STATUSES.DELETED])}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-200 ${
                 statusFilter.includes(STATUSES.DELETED)
-                  ? 'bg-white/20 text-white'
-                  : 'bg-slate-100 text-slate-500'
+                  ? 'bg-gray-600 text-white border-gray-600 shadow-sm'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
               }`}
             >
-              {tasks.filter(t => t.status === STATUSES.DELETED).length}
-            </span>
-          </button>
+              <span>Deleted</span>
+              <span
+                className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none transition-colors ${
+                  statusFilter.includes(STATUSES.DELETED)
+                    ? 'bg-white/20 text-white'
+                    : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                {tasks.filter(t => t.status === STATUSES.DELETED).length}
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -383,6 +497,8 @@ export default function DepartmentDashboard({ users, tasks, allUsers, department
         onCreateRequest={handleCreateRequest}
         showAssignedUsers={true}
       />
+      </>
+      )}
     </div>
   );
 }

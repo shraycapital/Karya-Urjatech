@@ -17,6 +17,29 @@ const getPrimaryCollection = () => collection(db, TASKS_COLLECTION);
 // Helper function to get the backup collection
 const getBackupCollection = () => collection(db, TASKS_COLLECTION_UPPER);
 
+// Helper to resolve which collection a task lives in (tasks vs Tasks).
+// Many deployments historically wrote to `Tasks` (uppercase) and the app now reads from both.
+const resolveTaskDocRef = async (taskId) => {
+  const primaryRef = doc(getPrimaryCollection(), taskId);
+  const backupRef = doc(getBackupCollection(), taskId);
+
+  try {
+    const primarySnap = await getDoc(primaryRef);
+    if (primarySnap.exists()) return { ref: primaryRef, snap: primarySnap, source: TASKS_COLLECTION };
+  } catch (error) {
+    // Ignore and fall back to backup.
+  }
+
+  try {
+    const backupSnap = await getDoc(backupRef);
+    if (backupSnap.exists()) return { ref: backupRef, snap: backupSnap, source: TASKS_COLLECTION_UPPER };
+  } catch (error) {
+    // Ignore and fall back to primary as default.
+  }
+
+  return { ref: primaryRef, snap: null, source: 'unknown' };
+};
+
 export const subscribeTasks = (onChange, options = {}) => {
   const { progressive = true, loadHeavyItems = false } = options;
   
@@ -30,13 +53,19 @@ export const subscribeTasks = (onChange, options = {}) => {
     // If progressive loading is enabled, strip heavy items from initial load
     const tasks = Array.from(map.values()).map(task => {
       if (progressive && !loadHeavyItems) {
+        // Keep only the latest note for fast initial rendering (avoids showing stale "first note"
+        // and prevents leaking `[undefined]` into the UI when notes is an empty array).
+        const latestNote =
+          Array.isArray(task.notes) && task.notes.length > 0
+            ? task.notes[task.notes.length - 1]
+            : null;
+
         return {
           ...task,
           // Keep basic info for fast loading
-          photos: task.photos ? [] : [], // Empty array for photos initially
-          comments: task.comments ? [] : [], // Empty array for comments initially
-          // Keep detailed notes but limit to first note for initial display
-          notes: task.notes && Array.isArray(task.notes) ? [task.notes[0]] : [],
+          photos: [], // Empty array for photos initially
+          comments: [], // Empty array for comments initially
+          notes: latestNote ? [latestNote] : [],
           _progressiveLoaded: false // Flag to track progressive loading state
         };
       }
@@ -205,14 +234,15 @@ export const createTask = async (taskData, currentUserId, currentUserName) => {
 export const patchTask = async (taskId, updates = {}, currentUserId, currentUserName = 'Unknown') => {
   // Get the current task data for logging
   let currentTask = null;
+  let targetRef = doc(getPrimaryCollection(), taskId);
   try {
-    const taskRef = doc(getPrimaryCollection(), taskId);
-    const taskSnap = await getDoc(taskRef);
-    if (taskSnap.exists()) {
-      currentTask = { id: taskSnap.id, ...taskSnap.data() };
+    const resolved = await resolveTaskDocRef(taskId);
+    if (resolved?.ref) targetRef = resolved.ref;
+    if (resolved?.snap?.exists?.()) {
+      currentTask = { id: resolved.snap.id, ...resolved.snap.data() };
     }
   } catch (error) {
-    console.warn('Failed to get current task for logging:', error);
+    console.warn('Failed to resolve task document for update/logging:', error);
   }
 
   // Resolve user identity defensively
@@ -222,6 +252,11 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
   // Clean undefined values from updates
   const cleanUpdates = cleanFirestoreData(updates);
   
+  // The document ID should not be in the update payload
+  if (cleanUpdates.id) {
+    delete cleanUpdates.id;
+  }
+
   const data = { ...cleanUpdates, updatedAt: serverTimestamp(), updatedById: effectiveUserId };
   if (updates.status === 'Ongoing' && !updates.startedAt) data.startedAt = serverTimestamp();
   if (updates.status === 'Complete' && !updates.completedAt) data.completedAt = serverTimestamp();
@@ -239,7 +274,20 @@ export const patchTask = async (taskId, updates = {}, currentUserId, currentUser
   
   // Clean the final data object before sending to Firestore
   const finalData = cleanFirestoreData(data);
-  await updateDoc(doc(getPrimaryCollection(), taskId), finalData);
+  try {
+    await updateDoc(targetRef, finalData);
+  } catch (error) {
+    // Common legacy case: task exists in `Tasks` but not `tasks` (or vice-versa).
+    // If we get a not-found error, try the other collection before failing.
+    if (error?.code === 'not-found') {
+      const primaryRef = doc(getPrimaryCollection(), taskId);
+      const backupRef = doc(getBackupCollection(), taskId);
+      const fallbackRef = (targetRef?.path === primaryRef.path) ? backupRef : primaryRef;
+      await updateDoc(fallbackRef, finalData);
+    } else {
+      throw error;
+    }
+  }
   
   // Log task update activity
   if (currentTask) {
@@ -270,10 +318,9 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
   // Get the current task data for logging
   let currentTask = null;
   try {
-    const taskRef = doc(getPrimaryCollection(), taskId);
-    const taskSnap = await getDoc(taskRef);
-    if (taskSnap.exists()) {
-      currentTask = { id: taskSnap.id, ...taskSnap.data() };
+    const resolved = await resolveTaskDocRef(taskId);
+    if (resolved?.snap?.exists?.()) {
+      currentTask = { id: resolved.snap.id, ...resolved.snap.data() };
     }
   } catch (error) {
     console.warn('Failed to get current task for logging:', error);
@@ -309,7 +356,21 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
 
     // Clean the update data before sending to Firestore
     const cleanUpdateData = cleanFirestoreData(updateData);
-    await updateDoc(doc(getPrimaryCollection(), taskId), cleanUpdateData);
+    // Update the correct collection (tasks vs Tasks) for legacy compatibility.
+    const resolved = await resolveTaskDocRef(taskId);
+    const targetRef = resolved?.ref || doc(getPrimaryCollection(), taskId);
+    try {
+      await updateDoc(targetRef, cleanUpdateData);
+    } catch (error) {
+      if (error?.code === 'not-found') {
+        const primaryRef = doc(getPrimaryCollection(), taskId);
+        const backupRef = doc(getBackupCollection(), taskId);
+        const fallbackRef = (targetRef?.path === primaryRef.path) ? backupRef : primaryRef;
+        await updateDoc(fallbackRef, cleanUpdateData);
+      } else {
+        throw error;
+      }
+    }
 
     console.debug('Task delete update payload', { taskId, updateData });
 
@@ -329,13 +390,224 @@ export const removeTask = async (taskId, currentUserId = 'system', currentUserNa
 };
 
 export const getTask = async (taskId) => {
-  const ref = doc(getPrimaryCollection(), taskId);
-  const snap = await getDoc(ref);
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  // Try primary collection first, then fallback to legacy `Tasks`.
+  try {
+    const resolved = await resolveTaskDocRef(taskId);
+    if (resolved?.snap?.exists?.()) {
+      return { id: resolved.snap.id, ...resolved.snap.data() };
+    }
+    return null;
+  } catch (error) {
+    console.warn('Failed to load task:', error);
+    return null;
+  }
 };
 
 // Scheduled Tasks API Functions
 const SCHEDULED_TASKS_COLLECTION = 'scheduledTasks';
+
+const SCHEDULED_WEEKDAY_INDEX = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
+
+const MONTHLY_WEEK_INDEX = {
+  first: 0,
+  second: 1,
+  third: 2,
+  fourth: 3,
+};
+
+const normalizeScheduleDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : new Date(value);
+  }
+  if (typeof value?.toDate === 'function') {
+    return value.toDate();
+  }
+  if (typeof value?.seconds === 'number') {
+    return new Date(value.seconds * 1000 + (value.nanoseconds || 0) / 1000000);
+  }
+  if (typeof value === 'string') {
+    const normalizedValue = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value;
+    const parsed = new Date(normalizedValue);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+};
+
+const getDaysInMonth = (year, monthIndex) => {
+  return new Date(year, monthIndex + 1, 0).getDate();
+};
+
+const getNthWeekdayOfMonth = (year, monthIndex, weekdayName, weekdayOrder) => {
+  const targetDayIndex = SCHEDULED_WEEKDAY_INDEX[weekdayName];
+  if (targetDayIndex === undefined) return null;
+
+  if (weekdayOrder === 'last') {
+    const lastDayOfMonth = new Date(year, monthIndex + 1, 0);
+    const offset = (lastDayOfMonth.getDay() - targetDayIndex + 7) % 7;
+    return new Date(year, monthIndex, lastDayOfMonth.getDate() - offset);
+  }
+
+  const firstDayOfMonth = new Date(year, monthIndex, 1);
+  const daysUntilTarget = (targetDayIndex - firstDayOfMonth.getDay() + 7) % 7;
+  const weekOffset = MONTHLY_WEEK_INDEX[weekdayOrder] ?? 0;
+  const dayOfMonth = 1 + daysUntilTarget + (weekOffset * 7);
+  const daysInMonth = getDaysInMonth(year, monthIndex);
+
+  if (dayOfMonth > daysInMonth) {
+    return null;
+  }
+
+  return new Date(year, monthIndex, dayOfMonth);
+};
+
+const getMonthlyOccurrenceForDate = (recurrencePattern, year, monthIndex) => {
+  if (recurrencePattern.monthlyType === 'weekday') {
+    return getNthWeekdayOfMonth(
+      year,
+      monthIndex,
+      recurrencePattern.monthlyWeekdayName,
+      recurrencePattern.monthlyWeekday
+    );
+  }
+
+  const dayOfMonth = Math.max(1, recurrencePattern.monthlyDay || 1);
+  const safeDay = Math.min(dayOfMonth, getDaysInMonth(year, monthIndex));
+  return new Date(year, monthIndex, safeDay);
+};
+
+const calculateFirstScheduledOccurrence = (recurrencePattern, startDate) => {
+  const normalizedStartDate = normalizeScheduleDate(startDate);
+  if (!normalizedStartDate || !recurrencePattern) return null;
+
+  const firstOccurrence = new Date(normalizedStartDate);
+
+  switch (recurrencePattern.type) {
+    case 'weekly': {
+      const weekdays = recurrencePattern.weekdays || [];
+      if (!weekdays.length) {
+        return firstOccurrence;
+      }
+
+      for (let i = 0; i <= 7 * Math.max(1, recurrencePattern.interval || 1); i += 1) {
+        const candidate = new Date(normalizedStartDate);
+        candidate.setDate(normalizedStartDate.getDate() + i);
+        const weekdayName = Object.keys(SCHEDULED_WEEKDAY_INDEX).find(
+          (key) => SCHEDULED_WEEKDAY_INDEX[key] === candidate.getDay()
+        );
+        if (weekdayName && weekdays.includes(weekdayName)) {
+          return candidate;
+        }
+      }
+      return firstOccurrence;
+    }
+    case 'monthly': {
+      if (recurrencePattern.monthlyType === 'regenerate') {
+        return firstOccurrence;
+      }
+
+      let monthOffset = 0;
+      const interval = Math.max(1, recurrencePattern.interval || 1);
+
+      while (monthOffset < 240) {
+        const candidateMonth = new Date(
+          normalizedStartDate.getFullYear(),
+          normalizedStartDate.getMonth() + monthOffset,
+          1
+        );
+        const candidate = getMonthlyOccurrenceForDate(
+          recurrencePattern,
+          candidateMonth.getFullYear(),
+          candidateMonth.getMonth()
+        );
+        if (candidate && candidate >= normalizedStartDate) {
+          return candidate;
+        }
+        monthOffset += interval;
+      }
+      return firstOccurrence;
+    }
+    default:
+      return firstOccurrence;
+  }
+};
+
+const calculateNextScheduledOccurrence = (recurrencePattern, lastOccurrence) => {
+  const normalizedLastOccurrence = normalizeScheduleDate(lastOccurrence);
+  if (!normalizedLastOccurrence || !recurrencePattern) return null;
+
+  const nextDate = new Date(normalizedLastOccurrence);
+
+  switch (recurrencePattern.type) {
+    case 'daily':
+      nextDate.setDate(normalizedLastOccurrence.getDate() + Math.max(1, recurrencePattern.interval || 1));
+      return nextDate;
+    case 'weekly': {
+      const weekdays = recurrencePattern.weekdays || ['monday'];
+      const interval = Math.max(1, recurrencePattern.interval || 1);
+
+      for (let i = 1; i <= 7 * interval; i += 1) {
+        const candidate = new Date(normalizedLastOccurrence);
+        candidate.setDate(normalizedLastOccurrence.getDate() + i);
+        const weekdayName = Object.keys(SCHEDULED_WEEKDAY_INDEX).find(
+          (key) => SCHEDULED_WEEKDAY_INDEX[key] === candidate.getDay()
+        );
+        if (weekdayName && weekdays.includes(weekdayName)) {
+          return candidate;
+        }
+      }
+
+      nextDate.setDate(normalizedLastOccurrence.getDate() + (7 * interval));
+      return nextDate;
+    }
+    case 'monthly': {
+      if (recurrencePattern.monthlyType === 'regenerate') {
+        return null;
+      }
+
+      const interval = Math.max(1, recurrencePattern.interval || 1);
+      const candidateMonth = new Date(
+        normalizedLastOccurrence.getFullYear(),
+        normalizedLastOccurrence.getMonth() + interval,
+        1
+      );
+      return getMonthlyOccurrenceForDate(
+        recurrencePattern,
+        candidateMonth.getFullYear(),
+        candidateMonth.getMonth()
+      );
+    }
+    case 'yearly':
+      nextDate.setFullYear(normalizedLastOccurrence.getFullYear() + Math.max(1, recurrencePattern.interval || 1));
+      return nextDate;
+    default:
+      return null;
+  }
+};
+
+const validateRecurrencePattern = (recurrencePattern) => {
+  const { type, interval, weekdays } = recurrencePattern || {};
+
+  if (!type || !['daily', 'weekly', 'monthly', 'yearly'].includes(type)) {
+    throw new Error('Invalid recurrence type');
+  }
+
+  if (!interval || interval < 1) {
+    throw new Error('Invalid recurrence interval');
+  }
+
+  if (type === 'weekly' && (!Array.isArray(weekdays) || weekdays.length === 0)) {
+    throw new Error('Weekly recurrence requires at least one weekday selected');
+  }
+};
 
 export const createScheduledTask = async (taskData, currentUserId, currentUserName) => {
   try {
@@ -352,87 +624,59 @@ export const createScheduledTask = async (taskData, currentUserId, currentUserNa
       throw new Error('Recurrence pattern is required for scheduled tasks');
     }
 
-    // Validate recurrence pattern
-    const { type, interval, weekdays, monthlyType, monthlyDay, monthlyWeekday, monthlyWeekdayName, regenerateAfter, range } = taskData.recurrencePattern;
-    
-    if (!type || !['daily', 'weekly', 'monthly', 'yearly'].includes(type)) {
-      throw new Error('Invalid recurrence type');
-    }
-    
-    if (!interval || interval < 1) {
-      throw new Error('Invalid recurrence interval');
-    }
-    
-    if (type === 'weekly' && (!weekdays || weekdays.length === 0)) {
-      throw new Error('Weekly recurrence requires at least one weekday selected');
+    validateRecurrencePattern(taskData.recurrencePattern);
+
+    const scheduleStartDate = normalizeScheduleDate(taskData.scheduledStartDate || taskData.targetDate);
+    if (!scheduleStartDate) {
+      throw new Error('A valid start date is required for scheduled tasks');
     }
 
-  // Calculate first occurrence date
-  const startDate = new Date(taskData.scheduledStartDate || taskData.targetDate);
-  const firstOccurrence = new Date(startDate);
-  
-  // For weekly tasks, find the next occurrence of selected weekdays
-  if (taskData.recurrencePattern.type === 'weekly' && taskData.recurrencePattern.weekdays) {
-    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const weekdays = taskData.recurrencePattern.weekdays;
-    
-    // Find next occurrence of any selected weekday
-    let found = false;
-    for (let i = 0; i <= 7 * taskData.recurrencePattern.interval; i++) {
-      const checkDate = new Date(startDate);
-      checkDate.setDate(startDate.getDate() + i);
-      const dayName = dayNames[checkDate.getDay()];
-      
-      if (weekdays.includes(dayName)) {
-        firstOccurrence.setTime(checkDate.getTime());
-        found = true;
-        break;
-      }
+    const firstOccurrence = calculateFirstScheduledOccurrence(taskData.recurrencePattern, scheduleStartDate);
+    if (!firstOccurrence) {
+      throw new Error('Failed to calculate the first scheduled occurrence');
     }
-    
-    if (!found) {
-      // If no weekday found, use start date
-      firstOccurrence.setTime(startDate.getTime());
-    }
-  }
 
-  const scheduledTaskData = {
-    title: taskData.title,
-    description: taskData.description || '',
-    assignedUserIds: taskData.assignedUserIds,
-    assignedById: currentUserId,
-    assignedByName: currentUserName,
-    departmentId: taskData.departmentId,
-    difficulty: taskData.difficulty,
-    points: taskData.points,
-    notes: taskData.notes || [],
-    photos: taskData.photos || [],
-    isUrgent: taskData.isUrgent || false,
-    recurrencePattern: JSON.parse(JSON.stringify(taskData.recurrencePattern)), // Deep clone and remove undefined
-    nextOccurrence: Timestamp.fromDate(firstOccurrence),
-    occurrenceCount: 0,
-    isActive: true,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    createdById: currentUserId,
-    createdByName: currentUserName,
-  };
-
-  const res = await addDoc(collection(db, SCHEDULED_TASKS_COLLECTION), scheduledTaskData);
-  
-  // Log scheduled task creation activity
-  try {
-    await logTaskActivity('create_scheduled', { ...scheduledTaskData, id: res.id }, currentUserId, currentUserName, {
-      recurrenceType: taskData.recurrencePattern.type,
-      interval: taskData.recurrencePattern.interval,
-      assignedUserCount: taskData.assignedUserIds?.length || 0,
+    const scheduledTaskData = {
+      title: taskData.title,
+      description: taskData.description || '',
+      assignedUserIds: taskData.assignedUserIds,
+      observerIds: Array.isArray(taskData.observerIds) ? taskData.observerIds : [],
+      assignedById: currentUserId,
+      assignedByName: currentUserName,
+      departmentId: taskData.departmentId,
+      difficulty: taskData.difficulty,
+      points: taskData.points,
+      notes: taskData.notes || [],
+      photos: taskData.photos || [],
       isUrgent: taskData.isUrgent || false,
-      firstOccurrence: firstOccurrence.toISOString()
-    });
-  } catch (error) {
-    console.warn('Failed to log scheduled task creation activity:', error);
-  }
-  
+      isRdNewSkill: taskData.isRdNewSkill || false,
+      projectSkillName: taskData.isRdNewSkill ? (taskData.projectSkillName || '') : '',
+      recurrencePattern: JSON.parse(JSON.stringify(taskData.recurrencePattern)),
+      scheduledStartDate: scheduleStartDate.toISOString(),
+      targetDate: scheduleStartDate.toISOString(),
+      nextOccurrence: Timestamp.fromDate(firstOccurrence),
+      occurrenceCount: 0,
+      isActive: taskData.isActive !== undefined ? taskData.isActive : true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdById: currentUserId,
+      createdByName: currentUserName,
+    };
+
+    const res = await addDoc(collection(db, SCHEDULED_TASKS_COLLECTION), scheduledTaskData);
+    
+    try {
+      await logTaskActivity('create_scheduled', { ...scheduledTaskData, id: res.id }, currentUserId, currentUserName, {
+        recurrenceType: taskData.recurrencePattern.type,
+        interval: taskData.recurrencePattern.interval,
+        assignedUserCount: taskData.assignedUserIds?.length || 0,
+        isUrgent: taskData.isUrgent || false,
+        firstOccurrence: firstOccurrence.toISOString()
+      });
+    } catch (error) {
+      console.warn('Failed to log scheduled task creation activity:', error);
+    }
+    
     return res.id;
   } catch (error) {
     console.error('Error creating scheduled task:', error);
@@ -455,21 +699,67 @@ export const subscribeScheduledTasks = (onChange) => {
 export const updateScheduledTask = async (scheduledTaskId, updates = {}, currentUserId, currentUserName = 'Unknown') => {
   const effectiveUserId = currentUserId || (typeof localStorage !== 'undefined' ? localStorage.getItem('kartavya_userId') : null) || 'system';
   const effectiveUserName = currentUserName || (typeof localStorage !== 'undefined' ? (localStorage.getItem('kartavya_userName') || 'Unknown') : 'Unknown');
+  const scheduledTaskRef = doc(db, SCHEDULED_TASKS_COLLECTION, scheduledTaskId);
+  const scheduledTaskSnap = await getDoc(scheduledTaskRef);
 
-  // Clean undefined values from updates
+  if (!scheduledTaskSnap.exists()) {
+    throw new Error('Scheduled task not found');
+  }
+
+  const currentTask = scheduledTaskSnap.data();
+
   const cleanUpdates = cleanFirestoreData(updates);
+  const mergedTask = {
+    ...currentTask,
+    ...cleanUpdates,
+  };
+
+  if (mergedTask.recurrencePattern) {
+    validateRecurrencePattern(mergedTask.recurrencePattern);
+  }
+
+  const schedulingFieldsChanged = [
+    'recurrencePattern',
+    'targetDate',
+    'scheduledStartDate',
+  ].some((key) => Object.prototype.hasOwnProperty.call(cleanUpdates, key));
 
   const data = { 
     ...cleanUpdates, 
     updatedAt: serverTimestamp(), 
     updatedById: effectiveUserId 
   };
+
+  if (Object.prototype.hasOwnProperty.call(cleanUpdates, 'targetDate')) {
+    data.scheduledStartDate = cleanUpdates.targetDate;
+  }
+
+  if (schedulingFieldsChanged && mergedTask.isActive) {
+    const scheduleStartDate = normalizeScheduleDate(
+      mergedTask.scheduledStartDate || mergedTask.targetDate || currentTask.nextOccurrence
+    );
+
+    if (!scheduleStartDate) {
+      throw new Error('A valid start date is required for scheduled tasks');
+    }
+
+    const recalculatedNextOccurrence = calculateFirstScheduledOccurrence(
+      mergedTask.recurrencePattern,
+      scheduleStartDate
+    );
+
+    if (!recalculatedNextOccurrence) {
+      throw new Error('Failed to calculate the next scheduled occurrence');
+    }
+
+    data.nextOccurrence = Timestamp.fromDate(recalculatedNextOccurrence);
+    data.lastError = null;
+    data.endedAt = null;
+  }
   
-  // Clean the final data object before sending to Firestore
   const finalData = cleanFirestoreData(data);
-  await updateDoc(doc(db, SCHEDULED_TASKS_COLLECTION, scheduledTaskId), finalData);
+  await updateDoc(scheduledTaskRef, finalData);
   
-  // Log scheduled task update activity
   try {
     await logTaskActivity('update_scheduled', { id: scheduledTaskId, ...updates }, effectiveUserId, effectiveUserName, {
       changes: Object.keys(updates),

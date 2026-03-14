@@ -2,10 +2,12 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { ROLES, STATUSES, DIFFICULTY_CONFIG } from '../../../shared/constants';
 import TaskForm from './TaskForm';
 import TaskList from './TaskList';
+import TaskListTable from './TaskListTable';
 import RequestModal from './RequestModal';
 import ScheduledTasksList from './ScheduledTasksList';
 import ApprovalPanel from './ApprovalPanel';
 import EditTaskModal from './EditTaskModal';
+import BulkDeleteTasksModal from './BulkDeleteTasksModal.jsx';
 import { toISTISOString } from '../../../shared/utils/date';
 import Section from '../../../shared/components/Section.jsx';
 import { logActivity } from '../../../shared/utils/activityLogger.js';
@@ -20,7 +22,7 @@ import {
 import { createMaterialRequest } from '../utils/materialRequest.js';
 import { updateUser } from '../../admin/api/adminApi.js';
 import { db } from '../../../firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, Timestamp } from 'firebase/firestore';
 import { DAILY_BONUS_POINTS, formatDateKey, getBonusPointsInRange, hasBonusBeenClaimed, mergeBonusClaim } from '../../../shared/utils/dailyBonus.js';
 
 
@@ -125,10 +127,12 @@ const formatDueTimeline = (now, target) => {
   return `Due in ${diffDays} days`;
 };
 
-function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOpenTaskId, onTaskFeedback, onLogActivity = null }) {
+function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOpenTaskId, onTaskFeedback, onLogActivity = null, isDesktopMode = false }) {
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState([STATUSES.PENDING, STATUSES.ONGOING]); // Array of selected statuses, default to pending and ongoing
   const [searchQuery, setSearchQuery] = useState(''); // Search query for tasks
+  const [showFiltersPanel, setShowFiltersPanel] = useState(false); // Collapsed by default – tasks first
+  const [showObserverTasks, setShowObserverTasks] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [bonusLedger, setBonusLedger] = useState(() => currentUser?.dailyBonusLedger || {});
   const [isClaimingBonus, setIsClaimingBonus] = useState(false);
@@ -143,6 +147,11 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   // Edit task modal state
   const [editingTask, setEditingTask] = useState(null);
   const [isEditTaskModalOpen, setIsEditTaskModalOpen] = useState(false);
+  const [isBulkSelectionMode, setIsBulkSelectionMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [failedTaskData, setFailedTaskData] = useState(null); // Capture failing task creations for retry
 
   // Allow user to edit daily target with a weekly lock (until next Monday)
   const [isEditingTarget, setIsEditingTarget] = useState(false);
@@ -341,12 +350,26 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
         dailyBonusLastClaimedAt: isoNow,
       };
       const cleanUpdateData = cleanFirestoreData(updateData);
-      await updateDoc(doc(db, 'users', currentUser.id), cleanUpdateData);
+      
+      let success = false;
+      let lastError = null;
+
+      try {
+        await updateDoc(doc(db, 'users', currentUser.id), cleanUpdateData);
+        success = true;
+      } catch (err) {
+        lastError = err;
+      }
 
       try {
         await updateDoc(doc(db, 'Users', currentUser.id), cleanUpdateData);
-      } catch (_upperCollectionError) {
-        // Ignore missing alternate collection
+        success = true;
+      } catch (err) {
+        if (!success) lastError = err;
+      }
+
+      if (!success) {
+        throw lastError || new Error("Failed to update user document in any collection");
       }
 
       if (typeof onTaskFeedback === 'function') {
@@ -373,6 +396,8 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
 
   const handleAddTask = async (newTask) => {
     try {
+      // Clear previous failed state
+      setFailedTaskData(null);
       // Check if this is a scheduled task
       if (newTask.isScheduled && newTask.recurrencePattern) {
         // Create scheduled task
@@ -409,6 +434,8 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
       }
     } catch (error) {
       console.error('Error creating task:', error);
+      // Save data so user can retry without losing their work
+      setFailedTaskData(newTask);
       if (onTaskFeedback) {
         const errorMessage = error.message || 'Unknown error';
         onTaskFeedback(`Failed to create ${newTask.isScheduled ? 'scheduled ' : ''}task: ${errorMessage}`, 'error');
@@ -418,8 +445,14 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   
   const handleUpdateTask = async (patch) => {
     try {
+      if (!patch || typeof patch !== 'object') {
+        throw new Error('Invalid patch');
+      }
+      if (!patch.id) {
+        throw new Error('Missing task id');
+      }
       const oldTask = mergedTasks.find(t => t.id === patch.id);
-      await updateTask(patch.id, patch, currentUser.id);
+      await updateTask(patch.id, patch, currentUser.id, currentUser?.name || currentUser?.username || 'Unknown');
       if (onTaskFeedback) {
         onTaskFeedback('Task updated successfully!', 'success');
       }
@@ -432,9 +465,13 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
         });
       }
     } catch (error) {
+      console.error('TasksTab: failed to update task', error);
       if (onTaskFeedback) {
-        onTaskFeedback('Failed to update task. Please try again.', 'error');
+        const msg = error?.message ? `Failed to update task: ${error.message}` : 'Failed to update task. Please try again.';
+        onTaskFeedback(msg, 'error');
       }
+      // IMPORTANT: rethrow so callers (EditTaskModal, optimistic status changes) can handle failures properly.
+      throw error;
     }
   };
 
@@ -473,6 +510,26 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
     }
   };
 
+  const canBulkDeleteTask = useCallback((task) => {
+    if (!task || task.status === STATUSES.DELETED) return false;
+
+    const isCurrentUserObserver =
+      !!currentUser?.id &&
+      Array.isArray(task.observerIds) &&
+      task.observerIds.includes(currentUser.id);
+
+    const isCurrentUserAssigned =
+      !!currentUser?.id &&
+      Array.isArray(task.assignedUserIds) &&
+      task.assignedUserIds.includes(currentUser.id);
+
+    const isTaskCreator = !!currentUser?.id && task.assignedById === currentUser.id;
+    const isPrivileged = ['Head', 'Management', 'Admin'].includes(currentUser?.role);
+    const isObserverOnly = isCurrentUserObserver && !isCurrentUserAssigned && !isTaskCreator && !isPrivileged;
+
+    return !isObserverOnly;
+  }, [currentUser]);
+
   const handleCreateRequest = async (requestData) => {
     try {
       await createMaterialRequest(requestData, currentUser);
@@ -492,7 +549,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
         text: commentText,
         userId: currentUser.id,
         userName: currentUser.name,
-        createdAt: new Date().toISOString(),
+        createdAt: Timestamp.now(), // Use Firestore Timestamp
         editedBy: currentUser.id,
         editedByName: currentUser.name
       };
@@ -533,7 +590,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
       const updatedComments = (task.comments || []).filter(comment => comment?.id !== commentId);
       
       // Update the task with the new comments array
-      await handleUpdateTask(taskId, { comments: updatedComments });
+      await handleUpdateTask({ id: taskId, comments: updatedComments });
 
       console.log('Comment deleted successfully');
     } catch (error) {
@@ -587,24 +644,40 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
         return;
       }
 
-      // Update task with rejection information
-      await updateTask(taskId, {
-        needsApproval: false,
-        rejectedBy: currentUser.id,
-        rejectedByName: currentUser.name,
-        rejectedAt: new Date().toISOString(),
-        status: 'Rejected'
-      }, currentUser.id);
+      // Prompt user for a rejection reason
+      const reason = window.prompt('Please provide a reason for rejecting this task:', '');
+      if (reason === null) {
+        // User cancelled the prompt
+        return;
+      }
+
+      const trimmedReason = reason.trim();
+      if (!trimmedReason) {
+        alert('A reason is required to reject the task. Task was not deleted.');
+        return;
+      }
+
+      // Confirm deletion since rejection now deletes the task
+      const confirmDeletion = window.confirm(
+        `Rejecting this task will delete it for everyone.\n\nReason: ${trimmedReason}\n\nDo you want to continue?`
+      );
+      if (!confirmDeletion) {
+        return;
+      }
+
+      // Delete the task with the provided reason
+      await deleteTask(taskId, currentUser.id, currentUser.name, trimmedReason);
 
       if (onTaskFeedback) {
-        onTaskFeedback('Task rejected successfully!', 'success');
+        onTaskFeedback('Task rejected and deleted successfully!', 'success');
       }
 
       // Log activity
       if (onLogActivity) {
         onLogActivity('reject_task', 'task', taskId, task.title, currentUser.id, currentUser.name, {
           rejectedFor: task.assignedById,
-          rejectedForName: task.assignedByName
+          rejectedForName: task.assignedByName,
+          deleteReason: trimmedReason
         });
       }
     } catch (error) {
@@ -666,8 +739,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   };
 
   
-  // Improved task filtering logic
-  const myTasks = (mergedTasks || []).filter((t) => {
+  const assignedTasks = (mergedTasks || []).filter((t) => {
     if (!t || !currentUser?.id) return false;
 
     // Hide deleted tasks from regular users (only admins can see them)
@@ -675,16 +747,32 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
       return false;
     }
 
-    // Handle both array and single value cases for assignedUserIds
-    if (Array.isArray(t.assignedUserIds)) {
-      return t.assignedUserIds.includes(currentUser.id);
-    } else if (t.assignedUserIds === currentUser.id) {
-      return true;
-    } else if (t.assignedUserId === currentUser.id) {
-      return true;
-    }
-    return false;
+    return Array.isArray(t.assignedUserIds)
+      ? t.assignedUserIds.includes(currentUser.id)
+      : t.assignedUserIds === currentUser.id || t.assignedUserId === currentUser.id;
   });
+
+  const observerTasks = (mergedTasks || []).filter((t) => {
+    if (!t || !currentUser?.id) return false;
+
+    if (t.status === STATUSES.DELETED && currentUser.role !== ROLES.ADMIN) {
+      return false;
+    }
+
+    const isAssigned = Array.isArray(t.assignedUserIds)
+      ? t.assignedUserIds.includes(currentUser.id)
+      : t.assignedUserIds === currentUser.id || t.assignedUserId === currentUser.id;
+
+    const isObserver = Array.isArray(t.observerIds)
+      ? t.observerIds.includes(currentUser.id)
+      : t.observerIds === currentUser.id || t.observerId === currentUser.id;
+
+    return isObserver && !isAssigned;
+  });
+
+  const myTasks = useMemo(() => {
+    return showObserverTasks ? [...assignedTasks, ...observerTasks] : assignedTasks;
+  }, [assignedTasks, observerTasks, showObserverTasks]);
 
   const now = new Date();
   const startOfToday = new Date(now);
@@ -918,6 +1006,95 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
     
     return filtered;
   }, [myTasks, statusFilter, showDueSoonOnly, dueSoonTaskIds, searchTasks, searchQuery]);
+
+  useEffect(() => {
+    setSelectedTaskIds((prev) => prev.filter((taskId) => filteredTasks.some((task) => task.id === taskId && canBulkDeleteTask(task))));
+  }, [filteredTasks, canBulkDeleteTask]);
+
+  const selectableFilteredTasks = useMemo(() => {
+    return filteredTasks.filter(canBulkDeleteTask);
+  }, [filteredTasks, canBulkDeleteTask]);
+
+  const selectedBulkTasks = useMemo(() => {
+    return selectableFilteredTasks.filter((task) => selectedTaskIds.includes(task.id));
+  }, [selectableFilteredTasks, selectedTaskIds]);
+
+  const allSelectableVisibleSelected = selectableFilteredTasks.length > 0 &&
+    selectableFilteredTasks.every((task) => selectedTaskIds.includes(task.id));
+
+  const toggleTaskSelection = useCallback((taskId) => {
+    setSelectedTaskIds((prev) => (
+      prev.includes(taskId)
+        ? prev.filter((id) => id !== taskId)
+        : [...prev, taskId]
+    ));
+  }, []);
+
+  const handleToggleSelectAllVisible = useCallback(() => {
+    const visibleIds = selectableFilteredTasks.map((task) => task.id);
+    setSelectedTaskIds((prev) => {
+      if (allSelectableVisibleSelected) {
+        return prev.filter((id) => !visibleIds.includes(id));
+      }
+
+      return Array.from(new Set([...prev, ...visibleIds]));
+    });
+  }, [allSelectableVisibleSelected, selectableFilteredTasks]);
+
+  const resetBulkSelection = useCallback(() => {
+    setIsBulkSelectionMode(false);
+    setSelectedTaskIds([]);
+    setIsBulkDeleteModalOpen(false);
+  }, []);
+
+  const handleConfirmBulkDelete = useCallback(async (deleteReason) => {
+    if (!selectedBulkTasks.length) return;
+
+    setIsBulkDeleting(true);
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const task of selectedBulkTasks) {
+      try {
+        await deleteTask(
+          task.id,
+          currentUser?.id || 'system',
+          currentUser?.name || currentUser?.username || 'System',
+          deleteReason
+        );
+
+        if (onLogActivity) {
+          onLogActivity('soft_delete', 'task', task.id, task.title, currentUser.id, currentUser.name, {
+            taskDetails: {
+              status: task.status,
+              departmentId: task.departmentId,
+              assignedUserIds: task.assignedUserIds,
+              deleteReason,
+              bulkDelete: true,
+            }
+          });
+        }
+
+        successCount += 1;
+      } catch (error) {
+        console.error('Failed to bulk delete task', task.id, error);
+        failureCount += 1;
+      }
+    }
+
+    if (onTaskFeedback) {
+      if (failureCount === 0) {
+        onTaskFeedback(`Deleted ${successCount} task${successCount === 1 ? '' : 's'} successfully.`, 'success');
+      } else if (successCount > 0) {
+        onTaskFeedback(`Deleted ${successCount} task${successCount === 1 ? '' : 's'}. ${failureCount} failed.`, 'error');
+      } else {
+        onTaskFeedback('Failed to delete selected tasks. Please try again.', 'error');
+      }
+    }
+
+    setIsBulkDeleting(false);
+    resetBulkSelection();
+  }, [selectedBulkTasks, currentUser, onTaskFeedback, onLogActivity, resetBulkSelection, deleteTask]);
   
   // Sorting helpers
   const getRelevantDate = (t) => {
@@ -947,9 +1124,195 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
   };
 
 
+  const TaskListComponent = isDesktopMode ? TaskListTable : TaskList;
+
   return (
-    <div className="space-y-4 pb-20">
+    <div className={`space-y-4 pb-20 ${isDesktopMode ? 'flex flex-col lg:flex-row lg:gap-6' : ''}`}>
+        {isDesktopMode ? (
+          <div className="flex flex-col gap-4">
+            {/* Desktop: Banners at top - full width */}
+            <div className="w-full space-y-3">
+              {failedTaskData && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-red-900">Task Creation Failed</div>
+                      <p className="text-xs text-red-800">We couldn&apos;t save &quot;{failedTaskData.title}&quot;. Check your connection to retry.</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setIsCreateTaskOpen(true)} className="btn btn-sm bg-red-600 text-white">Retry</button>
+                      <button onClick={() => setFailedTaskData(null)} className="btn btn-sm btn-secondary">Dismiss</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <ApprovalPanel tasks={tasks} currentUser={currentUser} users={users} onApprove={handleApproveTask} onReject={handleRejectTask} onEdit={handleEditTask} onDismiss={handleDismissApproval} t={t} />
+              {shouldShowPriorityPanel && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-amber-600">⚡</span>
+                    <span className="text-sm font-medium text-amber-900">{prioritySummary} — </span>
+                    {nextTask && (
+                      <button onClick={handlePriorityCta} className="text-sm font-semibold text-amber-700 hover:text-amber-900 underline">
+                        {nextTaskIsStale ? t('jumpToTask', 'Jump to task') : t('reviewDueSoon', 'Review due soon')}
+                      </button>
+                    )}
+                  </div>
+                  <button onClick={handleDismissPriorityPanel} className="text-xs text-amber-700 hover:text-amber-900">{t('dismiss')}</button>
+                </div>
+              )}
+            </div>
+            {/* Desktop: Sidebar + Main */}
+            <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-w-0">
+            {/* Left sidebar - filters always visible */}
+            <aside className="lg:w-64 shrink-0 space-y-4">
+              <Section title={t('myTasks')}>
+                <div className="space-y-4">
+                  {/* Today's Points - compact */}
+                  <div className="p-3 rounded-lg bg-gradient-to-r from-blue-50 to-indigo-50 border border-indigo-100">
+                    <div className="text-xs font-semibold text-slate-800">Today</div>
+                    <div className="text-lg font-bold text-indigo-600">{todayStats.points} / {sliderTarget}</div>
+                    <div className="h-1.5 mt-1 rounded-full bg-slate-200 overflow-hidden">
+                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${sliderPct}%` }} />
+                    </div>
+                  </div>
+                  {!hasClaimedDailyBonus && (
+                    <button
+                      type="button"
+                      onClick={handleClaimDailyBonus}
+                      disabled={isClaimingBonus}
+                      className="w-full rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-70"
+                    >
+                      {t('claimDailyBonus')} +{DAILY_BONUS_POINTS}
+                    </button>
+                  )}
+                  {/* Search - always visible */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">{t('searchTasks')}</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        placeholder={t('searchTasksPlaceholder') || 'Search...'}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full pl-8 pr-8 py-2 border border-slate-200 rounded-lg text-sm focus:ring-1 focus:ring-blue-500"
+                      />
+                      <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                      </div>
+                      {searchQuery && (
+                        <button onClick={() => setSearchQuery('')} className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-600">
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {/* Status filters */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-2">{t('filterByStatus')}</label>
+                    <div className="flex flex-col gap-1">
+                      <FilterButton label={t('allTasks') || 'All'} count={taskStats.total} isActive={statusFilter.length === 0} onClick={() => { setShowDueSoonOnly(false); setStatusFilter([]); }} />
+                      <FilterButton label={t('pending') || 'Pending'} count={taskStats.pending} isActive={statusFilter.includes(STATUSES.PENDING)} onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.PENDING) ? prev.filter(s => s !== STATUSES.PENDING) : [...prev, STATUSES.PENDING]); }} />
+                      <FilterButton label={t('ongoing') || 'Ongoing'} count={taskStats.ongoing} isActive={statusFilter.includes(STATUSES.ONGOING)} onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.ONGOING) ? prev.filter(s => s !== STATUSES.ONGOING) : [...prev, STATUSES.ONGOING]); }} />
+                      <FilterButton label={t('dueSoon', 'Due soon')} count={dueSoonTasks.length} isActive={showDueSoonOnly} onClick={() => setShowDueSoonOnly(prev => { const next = !prev; if (next) setStatusFilter([STATUSES.PENDING, STATUSES.ONGOING]); return next; })} />
+                      <FilterButton label={t('completed') || 'Done'} count={taskStats.complete} isActive={statusFilter.includes(STATUSES.COMPLETE)} onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.COMPLETE) ? prev.filter(s => s !== STATUSES.COMPLETE) : [...prev, STATUSES.COMPLETE]); }} />
+                    </div>
+                  </div>
+                  {/* Bulk actions */}
+                  {!isBulkSelectionMode ? (
+                    <button onClick={() => setIsBulkSelectionMode(true)} disabled={selectableFilteredTasks.length === 0} className="w-full btn btn-secondary btn-sm">
+                      {t('selectTasksToDelete', 'Select tasks')}
+                    </button>
+                  ) : (
+                    <button onClick={resetBulkSelection} className="w-full btn btn-secondary btn-sm">{t('cancel')}</button>
+                  )}
+                  {/* Quick create */}
+                  <button onClick={() => { setFailedTaskData(null); setIsCreateTaskOpen(true); }} className="w-full btn btn-primary btn-sm">
+                    <PlusIcon className="inline mr-1" size={14} /> {t('newTask')}
+                  </button>
+                </div>
+              </Section>
+            </aside>
+            {/* Desktop: Main content - table */}
+            <main className="flex-1 min-w-0">
+              {/* Bulk actions bar when in selection mode */}
+              {isBulkSelectionMode && (
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <span className="text-sm font-medium text-slate-700">{selectedTaskIds.length} {t('tasksSelected', 'selected')}</span>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={handleToggleSelectAllVisible} className="btn btn-secondary btn-sm" disabled={selectableFilteredTasks.length === 0}>
+                      {allSelectableVisibleSelected ? t('clearVisibleSelection', 'Clear') : t('selectAllVisible', 'Select all')}
+                    </button>
+                    <button type="button" onClick={() => setIsBulkDeleteModalOpen(true)} className="btn btn-danger btn-sm" disabled={selectedBulkTasks.length === 0 || isBulkDeleting}>
+                      {t('deleteSelectedTasks', 'Delete selected')}
+                    </button>
+                    <button type="button" onClick={resetBulkSelection} className="btn btn-secondary btn-sm">{t('cancel')}</button>
+                  </div>
+                </div>
+              )}
+              <Section title={isBulkSelectionMode ? '' : `${filteredTasks.length} ${t('tasks')}`}>
+                {!isTasksLoaded ? (
+                  <div className="space-y-2">
+                    {[1,2,3,4,5].map(i => <div key={i} className="h-12 bg-slate-200 rounded animate-pulse" />)}
+                  </div>
+                ) : (
+                  <TaskListComponent
+                    tasks={filteredTasks}
+                    allTasks={mergedTasks}
+                    onUpdateTask={handleUpdateTask}
+                    onUpdateTaskLocal={handleUpdateTaskLocal}
+                    t={t}
+                    currentUser={currentUser}
+                    users={users}
+                    departments={departments}
+                    deleteTask={handleDeleteTask}
+                    onCreateRequest={handleCreateRequest}
+                    onAddComment={handleAddComment}
+                    onDeleteComment={handleDeleteComment}
+                    openTaskId={openTaskId}
+                    selectionMode={isBulkSelectionMode}
+                    selectedTaskIds={selectedTaskIds}
+                    onToggleSelectTask={toggleTaskSelection}
+                    isTaskSelectable={canBulkDeleteTask}
+                  />
+                )}
+              </Section>
+            </main>
+            </div>
+          </div>
+        ) : (
         <Section title={t('myTasks')}>
+          {/* Failed Task Retry Banner */}
+          {failedTaskData && (
+            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm animate-pulse">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-red-900">
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600">⚠️</span>
+                    Task Creation Failed
+                  </div>
+                  <p className="mt-1 text-xs text-red-800">
+                    We couldn't save <b>"{failedTaskData.title}"</b> in the background. Check your connection to try again without losing your form inputs.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button 
+                      onClick={() => setIsCreateTaskOpen(true)}
+                      className="px-3 py-1.5 bg-red-600 text-white rounded-md text-xs font-medium hover:bg-red-700 shadow-sm"
+                    >
+                      Open & Retry
+                    </button>
+                    <button 
+                      onClick={() => setFailedTaskData(null)}
+                      className="px-3 py-1.5 bg-white text-red-700 border border-red-300 rounded-md text-xs font-medium hover:bg-red-50"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Approval Panel for Department Heads */}
           <ApprovalPanel
             tasks={tasks}
@@ -1116,114 +1479,183 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
             )}
           </div>
 
-          {/* Search Bar */}
-          <div className="mb-4">
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </div>
-              <input
-                type="text"
-                placeholder={t('searchTasks') || 'Search tasks by title, description, assignee, department, status...'}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 text-sm"
-              />
+          {/* Compact bar: task count + expand/collapse for filters & search (tasks-first layout) */}
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <span className="text-sm font-medium text-slate-600">
+              {filteredTasks.length} {filteredTasks.length === 1 ? (t('task') || 'task') : (t('tasks') || 'tasks')}
               {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
+                <span className="ml-1 text-slate-400">
+                  ({t('searchResults') || 'search'})
+                </span>
               )}
-            </div>
-            {searchQuery && (
-              <p className="mt-1 text-xs text-gray-500">
-                {t('searchResults') || 'Search results'}: {filteredTasks.length} {t('tasks') || 'tasks'} found
-              </p>
-            )}
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowFiltersPanel(prev => !prev)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-300 text-sm font-medium transition-colors"
+              aria-expanded={showFiltersPanel}
+            >
+              <svg className="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              {t('filtersAndSearch', 'Filters & search')}
+              <svg
+                className={`h-4 w-4 text-slate-400 transition-transform ${showFiltersPanel ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
           </div>
 
-          {/* Filter Buttons */}
-          <div className="mb-3">
-              <div className="flex flex-wrap gap-1.5">
-                <FilterButton
-                  label={t('allTasks') || 'All Tasks'}
-                  count={taskStats.total}
-                  isActive={statusFilter.length === 0}
-                  onClick={() => {
-                    setShowDueSoonOnly(false);
-                    setStatusFilter([]);
-                  }}
-                />
-                <FilterButton
-                  label={t('pending') || 'Pending'}
-                  count={taskStats.pending}
-                  isActive={statusFilter.includes(STATUSES.PENDING)}
-                  onClick={() => {
-                    setShowDueSoonOnly(false);
-                    setStatusFilter(prev => prev.includes(STATUSES.PENDING) ? prev.filter(s => s !== STATUSES.PENDING) : [...prev, STATUSES.PENDING]);
-                  }}
-                />
-                <FilterButton
-                  label={t('ongoing') || 'Ongoing'}
-                  count={taskStats.ongoing}
-                  isActive={statusFilter.includes(STATUSES.ONGOING)}
-                  onClick={() => {
-                    setShowDueSoonOnly(false);
-                    setStatusFilter(prev => prev.includes(STATUSES.ONGOING) ? prev.filter(s => s !== STATUSES.ONGOING) : [...prev, STATUSES.ONGOING]);
-                  }}
-                />
-                <FilterButton
-                  label={t('dueSoon', 'Due soon')}
-                  count={dueSoonTasks.length}
-                  isActive={showDueSoonOnly}
-                  onClick={() => {
-                    setShowDueSoonOnly(prev => {
-                      const next = !prev;
-                      if (next) {
-                        setStatusFilter([STATUSES.PENDING, STATUSES.ONGOING]);
-                      }
-                      return next;
-                    });
-                  }}
-                />
-                <FilterButton
-                  label={t('completed') || 'Completed'}
-                  count={taskStats.complete}
-                  isActive={statusFilter.includes(STATUSES.COMPLETE)}
-                  onClick={() => {
-                    setShowDueSoonOnly(false);
-                    setStatusFilter(prev => prev.includes(STATUSES.COMPLETE) ? prev.filter(s => s !== STATUSES.COMPLETE) : [...prev, STATUSES.COMPLETE]);
-                  }}
-                />
-                <FilterButton
-                  label={t('rejected') || 'Rejected'}
-                  count={taskStats.rejected}
-                  isActive={statusFilter.includes(STATUSES.REJECTED)}
-                  onClick={() => {
-                    setShowDueSoonOnly(false);
-                    setStatusFilter(prev => prev.includes(STATUSES.REJECTED) ? prev.filter(s => s !== STATUSES.REJECTED) : [...prev, STATUSES.REJECTED]);
-                  }}
-                />
-                <FilterButton
-                  label={t('deleted') || 'Deleted'}
-                  count={taskStats.deleted}
-                  isActive={statusFilter.includes(STATUSES.DELETED)}
-                  onClick={() => {
-                    setShowDueSoonOnly(false);
-                    setStatusFilter(prev => prev.includes(STATUSES.DELETED) ? prev.filter(s => s !== STATUSES.DELETED) : [...prev, STATUSES.DELETED]);
-                  }}
-                />
+          {/* Collapsible: Search, filters, bulk actions */}
+          {showFiltersPanel && (
+            <div className="mb-4 space-y-4 rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+              {/* Search */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">{t('searchTasks') || 'Search'}</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder={t('searchTasksPlaceholder') || 'Title, description, assignee, department...'}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="block w-full pl-10 pr-9 py-2 border border-gray-300 rounded-md bg-white text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Filter chips */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-2">{t('filterByStatus') || 'Filter by status'}</label>
+                <div className="flex flex-wrap gap-1.5">
+                  <FilterButton
+                    label={t('allTasks') || 'All'}
+                    count={taskStats.total}
+                    isActive={statusFilter.length === 0}
+                    onClick={() => { setShowDueSoonOnly(false); setStatusFilter([]); }}
+                  />
+                  <FilterButton
+                    label={t('pending') || 'Pending'}
+                    count={taskStats.pending}
+                    isActive={statusFilter.includes(STATUSES.PENDING)}
+                    onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.PENDING) ? prev.filter(s => s !== STATUSES.PENDING) : [...prev, STATUSES.PENDING]); }}
+                  />
+                  <FilterButton
+                    label={t('ongoing') || 'Ongoing'}
+                    count={taskStats.ongoing}
+                    isActive={statusFilter.includes(STATUSES.ONGOING)}
+                    onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.ONGOING) ? prev.filter(s => s !== STATUSES.ONGOING) : [...prev, STATUSES.ONGOING]); }}
+                  />
+                  <FilterButton
+                    label={t('dueSoon', 'Due soon')}
+                    count={dueSoonTasks.length}
+                    isActive={showDueSoonOnly}
+                    onClick={() => setShowDueSoonOnly(prev => { const next = !prev; if (next) setStatusFilter([STATUSES.PENDING, STATUSES.ONGOING]); return next; })}
+                  />
+                  <FilterButton
+                    label={t('completed') || 'Done'}
+                    count={taskStats.complete}
+                    isActive={statusFilter.includes(STATUSES.COMPLETE)}
+                    onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.COMPLETE) ? prev.filter(s => s !== STATUSES.COMPLETE) : [...prev, STATUSES.COMPLETE]); }}
+                  />
+                  <FilterButton
+                    label={t('rejected') || 'Rejected'}
+                    count={taskStats.rejected}
+                    isActive={statusFilter.includes(STATUSES.REJECTED)}
+                    onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.REJECTED) ? prev.filter(s => s !== STATUSES.REJECTED) : [...prev, STATUSES.REJECTED]); }}
+                  />
+                  <FilterButton
+                    label={t('deleted') || 'Deleted'}
+                    count={taskStats.deleted}
+                    isActive={statusFilter.includes(STATUSES.DELETED)}
+                    onClick={() => { setShowDueSoonOnly(false); setStatusFilter(prev => prev.includes(STATUSES.DELETED) ? prev.filter(s => s !== STATUSES.DELETED) : [...prev, STATUSES.DELETED]); }}
+                  />
+                </div>
+              </div>
+
+              {/* Observer Tasks Toggle */}
+              <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800">{t('observerTasks', 'Observer Tasks')}</div>
+                  <div className="text-xs text-slate-500">{t('showObserverTasksDescription', 'Show tasks where you are marked as an observer')}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowObserverTasks(prev => !prev)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 ${showObserverTasks ? 'bg-blue-600' : 'bg-slate-200'}`}
+                  role="switch"
+                  aria-checked={showObserverTasks}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${showObserverTasks ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+              </div>
+
+              {/* Bulk actions */}
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                {!isBulkSelectionMode ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-800">Bulk actions</div>
+                      <div className="text-xs text-slate-500">Select multiple tasks to delete with one reason.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsBulkSelectionMode(true)}
+                      className="btn btn-secondary btn-sm"
+                      disabled={selectableFilteredTasks.length === 0}
+                    >
+                      {t('selectTasksToDelete', 'Select tasks')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-800">
+                          {selectedTaskIds.length} {t('tasksSelected', 'task(s) selected')}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {selectableFilteredTasks.length} {t('selectableVisibleTasks', 'selectable visible')}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={handleToggleSelectAllVisible} className="btn btn-secondary btn-sm" disabled={selectableFilteredTasks.length === 0}>
+                          {allSelectableVisibleSelected ? t('clearVisibleSelection', 'Clear visible') : t('selectAllVisible', 'Select all visible')}
+                        </button>
+                        <button type="button" onClick={() => setIsBulkDeleteModalOpen(true)} className="btn btn-danger btn-sm" disabled={selectedBulkTasks.length === 0 || isBulkDeleting}>
+                          {t('deleteSelectedTasks', 'Delete selected')}
+                        </button>
+                        <button type="button" onClick={resetBulkSelection} className="btn btn-secondary btn-sm" disabled={isBulkDeleting}>
+                          {t('cancel', 'Cancel')}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {t('bulkDeleteHelp', 'Only tasks you can delete are selectable. Observer-only tasks excluded.')}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-
-          {/* Removed duplicate DailyPointsTarget for cleaner UI */}
+          )}
 
           {/* Task List with Progressive Loading */}
           {!isTasksLoaded ? (
@@ -1262,14 +1694,23 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
               onAddComment={handleAddComment}
               onDeleteComment={handleDeleteComment}
               openTaskId={openTaskId}
+              selectionMode={isBulkSelectionMode}
+              selectedTaskIds={selectedTaskIds}
+              onToggleSelectTask={toggleTaskSelection}
+              isTaskSelectable={canBulkDeleteTask}
             />
           )}
 
         </Section>
+        )}
       
+        {!isDesktopMode && (
         <Section title={t('createTask')}>
           <button
-            onClick={() => setIsCreateTaskOpen(true)}
+            onClick={() => {
+              setFailedTaskData(null);
+              setIsCreateTaskOpen(true);
+            }}
             className="w-full btn btn-primary"
           >
             <span className="inline-flex items-center gap-2">
@@ -1278,6 +1719,7 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
             </span>
           </button>
         </Section>
+        )}
 
         {/* Scheduled Tasks Section */}
         <Section title={t('scheduledTasks') || 'Scheduled Tasks'}>
@@ -1347,8 +1789,12 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
                   users={users}
                   departments={departments}
                   onCreate={handleAddTask}
+                  initialData={failedTaskData}
                   t={t}
-                  onCancel={() => setIsCreateTaskOpen(false)}
+                  onCancel={() => {
+                    setIsCreateTaskOpen(false);
+                    setFailedTaskData(null);
+                  }}
                 />
               </div>
             </div>
@@ -1372,9 +1818,24 @@ function TasksTab({ currentUser, users, departments, tasks, t, openTaskId, setOp
           />
         )}
 
+        <BulkDeleteTasksModal
+          isOpen={isBulkDeleteModalOpen}
+          onClose={() => {
+            if (!isBulkDeleting) {
+              setIsBulkDeleteModalOpen(false);
+            }
+          }}
+          onConfirm={handleConfirmBulkDelete}
+          tasks={selectedBulkTasks}
+          t={t}
+        />
+
         {/* Floating Action Button */}
         <button
-          onClick={() => setIsCreateTaskOpen(true)}
+          onClick={() => {
+            setFailedTaskData(null);
+            setIsCreateTaskOpen(true);
+          }}
           className="fixed bottom-20 right-6 w-14 h-14 bg-brand-600 hover:bg-brand-700 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-200 z-50 flex items-center justify-center text-4xl font-bold leading-none"
           title={t('createTask')}
         >

@@ -5,10 +5,10 @@
  */
 
 import { db } from '../../firebase';
-import { collection, getDocs, writeBatch, doc, serverTimestamp, query, where, collectionGroup, orderBy, setDoc, getDoc, updateDoc, runTransaction } from 'firebase/firestore';
+import { collection, getDocs, doc, serverTimestamp, query, collectionGroup, orderBy, setDoc, getDoc, updateDoc, runTransaction } from 'firebase/firestore';
 import { cleanFirestoreData } from './firestoreHelpers';
-import { redeemPoints } from './pointsManagement';
-import { getVoucherProducts, isProductFullyRedeemed } from './voucherProducts';
+import { redeemPoints, calculateUsablePoints, calculateTotalPoints, POINTS_CONFIG } from './pointsManagement';
+import { getVoucherProducts } from './voucherProducts';
 
 /**
  * Get all active voucher products from Firestore
@@ -48,26 +48,6 @@ function getCurrentMonth() {
 }
 
 /**
- * Check if voucher product is fully redeemed (quantity limit reached)
- * @param {string} productId - Product ID
- * @returns {Promise<boolean>} True if fully redeemed
- */
-async function isVoucherProductFullyRedeemed(productId) {
-  try {
-    const productDoc = await getDoc(doc(db, 'voucherProducts', productId));
-    if (!productDoc.exists()) {
-      return false;
-    }
-    
-    const product = { id: productDoc.id, ...productDoc.data() };
-    return isProductFullyRedeemed(product);
-  } catch (error) {
-    console.error('Error checking if product is fully redeemed:', error);
-    return false;
-  }
-}
-
-/**
  * Purchase vouchers (redeem points and add to user inventory)
  * @param {string} userId - User ID
  * @param {string} userName - User name
@@ -80,8 +60,24 @@ export async function purchaseVouchers(userId, userName, cartItems) {
       throw new Error('Invalid parameters');
     }
 
+    // Normalize the incoming cart to guard against duplicate product rows
+    // and non-integer / invalid quantities.
+    const normalizedCartItems = Object.values(
+      cartItems.reduce((acc, item) => {
+        const normalizedQuantity = Number.parseInt(item?.quantity, 10);
+        if (!item?.productId || !Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
+          throw new Error('Invalid cart items');
+        }
+        if (!acc[item.productId]) {
+          acc[item.productId] = { productId: item.productId, quantity: 0 };
+        }
+        acc[item.productId].quantity += normalizedQuantity;
+        return acc;
+      }, {})
+    );
+
     // Build a unique list of product IDs in the cart
-    const productIds = Array.from(new Set(cartItems.map(i => i.productId)));
+    const productIds = normalizedCartItems.map(i => i.productId);
 
     // Run end-to-end purchase in a single transaction to avoid race conditions
     const result = await runTransaction(db, async (tx) => {
@@ -105,7 +101,7 @@ export async function purchaseVouchers(userId, userName, cartItems) {
       }
 
       // Validate quantities per item
-      for (const item of cartItems) {
+      for (const item of normalizedCartItems) {
         const entry = productsById[item.productId];
         if (!entry) continue; // already has an error
         const { product } = entry;
@@ -129,7 +125,7 @@ export async function purchaseVouchers(userId, userName, cartItems) {
       }
 
       // 2) Calculate total points based on latest product pricing
-      const totalPoints = cartItems.reduce((sum, item) => {
+      const totalPoints = normalizedCartItems.reduce((sum, item) => {
         const entry = productsById[item.productId];
         const points = entry?.product?.points || 0;
         return sum + (points * item.quantity);
@@ -187,19 +183,14 @@ export async function purchaseVouchers(userId, userName, cartItems) {
       }
 
       // Recompute user aggregates
-      const updatedUsable = Object.entries(pointsHistory).reduce((sum, [key, entry]) => {
-        if (!entry || typeof entry.points !== 'number' || entry.isUsable === false) return sum;
-        const expiration = new Date(key);
-        expiration.setDate(expiration.getDate() + (entry.expirationDays || 90));
-        return (now <= expiration) ? sum + entry.points : sum;
-      }, 0);
-      const updatedTotal = Object.values(pointsHistory).reduce((sum, entry) => sum + (entry?.points || 0), 0);
+      const updatedUsable = calculateUsablePoints({ ...userData, pointsHistory });
+      const updatedTotal = calculateTotalPoints({ ...userData, pointsHistory });
 
       // 4) Create vouchers and update product counters
       const timestamp = serverTimestamp();
       const currentMonth = getCurrentMonth();
       const vouchersCreated = [];
-      for (const item of cartItems) {
+      for (const item of normalizedCartItems) {
         const { product, ref: productRef } = productsById[item.productId];
         // Create one doc per quantity
         for (let i = 0; i < item.quantity; i++) {
@@ -382,10 +373,132 @@ export async function getAllRedeemedVouchers() {
       orderBy('purchasedAt', 'desc')
     );
     const querySnapshot = await getDocs(vouchersQuery);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return querySnapshot.docs.map(doc => ({ 
+      id: doc.id, 
+      voucherDocPath: doc.ref.path, // Store full path for deletion
+      ...doc.data() 
+    }));
   } catch (error) {
     console.error('Error getting all redeemed vouchers:', error);
     return [];
+  }
+}
+
+/**
+ * Delete a voucher and refund points to user (Admin function)
+ * @param {string} userId - User ID who owns the voucher
+ * @param {string} voucherId - Voucher ID to delete
+ * @param {string} productId - Product ID of the voucher
+ * @param {number} pointsSpent - Points spent on the voucher
+ * @param {string} adminId - Admin ID performing the deletion
+ * @param {string} reason - Reason for deletion
+ * @returns {Promise<Object>} Result
+ */
+export async function deleteVoucherAndRefund(userId, voucherId, productId, pointsSpent, adminId, reason) {
+  try {
+    if (!userId || !voucherId || !productId) {
+      throw new Error('Missing required parameters');
+    }
+
+    // Run deletion and refund in a transaction
+    const result = await runTransaction(db, async (tx) => {
+      // 1) Get user document
+      const userRef = doc(db, 'users', userId);
+      const userSnap = await tx.get(userRef);
+      
+      if (!userSnap.exists()) {
+        throw new Error('User not found');
+      }
+      
+      const userData = userSnap.data();
+      
+      // 2) Get voucher document
+      const voucherRef = doc(db, 'users', userId, 'vouchers', voucherId);
+      const voucherSnap = await tx.get(voucherRef);
+      
+      if (!voucherSnap.exists()) {
+        throw new Error('Voucher not found');
+      }
+
+      const voucherData = voucherSnap.data();
+      const actualProductId = voucherData.productId || productId;
+      const actualPointsSpent = Number(voucherData.pointsSpent || pointsSpent || 0);
+
+      // 3) Get product document to decrement redeemedQuantity
+      const productRef = doc(db, 'voucherProducts', actualProductId);
+      const productSnap = await tx.get(productRef);
+      
+      if (productSnap.exists()) {
+        const product = productSnap.data();
+        const currentRedeemed = product.redeemedQuantity || 0;
+        const newRedeemed = Math.max(0, currentRedeemed - 1);
+        tx.update(productRef, { 
+          redeemedQuantity: newRedeemed,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      // 4) Refund points to user
+      const pointsHistory = { ...(userData.pointsHistory || {}) };
+      if (Object.keys(pointsHistory).length === 0) {
+        const fallbackPoints = Math.floor(userData.totalTCS || userData.weeklyTCS || 0);
+        if (fallbackPoints > 0) {
+          const seedKey = new Date().toISOString().slice(0, 10);
+          pointsHistory[seedKey] = {
+            points: fallbackPoints,
+            addedAt: serverTimestamp(),
+            expirationDays: POINTS_CONFIG.EXPIRATION_DAYS,
+            isUsable: true,
+            source: 'legacy_tcs_migration',
+          };
+        }
+      }
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const refundKey = `${todayKey}-refund-${Date.now()}`;
+      
+      pointsHistory[refundKey] = {
+        points: pointsSpent,
+        addedAt: serverTimestamp(),
+        expirationDays: 90,
+        isUsable: true,
+        refundReason: reason || 'Voucher deleted by admin',
+        refundedBy: adminId,
+        refundedVoucherId: voucherId,
+      };
+
+      // Recalculate user totals
+      const now = new Date();
+      const updatedUsable = calculateUsablePoints({ ...userData, pointsHistory });
+      const updatedTotal = calculateTotalPoints({ ...userData, pointsHistory });
+
+      // 5) Update user document
+      tx.update(userRef, {
+        pointsHistory: cleanFirestoreData(pointsHistory),
+        usablePoints: Math.floor(updatedUsable),
+        totalPoints: Math.floor(updatedTotal),
+        totalRedeemed: Math.max(0, (userData.totalRedeemed || 0) - actualPointsSpent),
+        totalVouchersPurchased: Math.max(0, (userData.totalVouchersPurchased || 0) - 1),
+        updatedAt: serverTimestamp(),
+      });
+
+      // 6) Delete voucher
+      tx.delete(voucherRef);
+
+      return { refundedPoints: actualPointsSpent };
+    });
+
+    return {
+      success: true,
+      refundedPoints: result.refundedPoints,
+      message: 'Voucher deleted and points refunded',
+    };
+
+  } catch (error) {
+    console.error('Error deleting voucher and refunding points:', error);
+    return {
+      success: false,
+      error: error.message,
+    };
   }
 }
 

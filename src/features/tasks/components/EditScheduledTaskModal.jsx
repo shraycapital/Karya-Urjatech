@@ -18,13 +18,15 @@ export default function EditScheduledTaskModal({
   onCancel, 
   t = (key) => key 
 }) {
+  const initialScheduleDate = scheduledTask.scheduledStartDate || scheduledTask.targetDate || scheduledTask.nextOccurrence || null;
   const [editedTask, setEditedTask] = useState({
+    id: scheduledTask.id,
     title: scheduledTask.title || '',
     description: scheduledTask.description || '',
     difficulty: scheduledTask.difficulty || DIFFICULTY_LEVELS.MEDIUM,
     assignedUserIds: scheduledTask.assignedUserIds || [],
     departmentId: scheduledTask.departmentId || '',
-    targetDate: scheduledTask.targetDate || null,
+    targetDate: initialScheduleDate,
     isUrgent: scheduledTask.isUrgent || false,
     isRdNewSkill: scheduledTask.isRdNewSkill || false,
     projectSkillName: scheduledTask.projectSkillName || '',
@@ -36,6 +38,23 @@ export default function EditScheduledTaskModal({
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [errors, setErrors] = useState({});
 
+  const formatDateForInput = (value) => {
+    if (!value) return '';
+    if (typeof value === 'string') {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().split('T')[0];
+    }
+    if (typeof value?.toDate === 'function') {
+      return value.toDate().toISOString().split('T')[0];
+    }
+    if (typeof value?.seconds === 'number') {
+      return new Date(value.seconds * 1000 + (value.nanoseconds || 0) / 1000000).toISOString().split('T')[0];
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().split('T')[0];
+  };
+
   // Get available users for the selected department
   const availableUsers = users.filter((u) => 
     editedTask.departmentId && u.departmentIds?.includes(editedTask.departmentId)
@@ -46,6 +65,7 @@ export default function EditScheduledTaskModal({
     if (scheduledTask.recurrencePattern) {
       setEditedTask(prev => ({
         ...prev,
+        id: scheduledTask.id,
         recurrencePattern: scheduledTask.recurrencePattern
       }));
     }
@@ -96,9 +116,11 @@ export default function EditScheduledTaskModal({
       // Ensure required fields have proper values
       const taskToSave = {
         ...cleanedTask,
+        id: scheduledTask.id,
         title: editedTask.title || '',
         description: editedTask.description || '',
         difficulty: editedTask.difficulty || DIFFICULTY_LEVELS.MEDIUM,
+        points: DIFFICULTY_CONFIG[editedTask.difficulty || DIFFICULTY_LEVELS.MEDIUM]?.points || scheduledTask.points,
         assignedUserIds: editedTask.assignedUserIds || [],
         departmentId: editedTask.departmentId || '',
         isUrgent: editedTask.isUrgent || false,
@@ -106,7 +128,8 @@ export default function EditScheduledTaskModal({
         projectSkillName: editedTask.isRdNewSkill ? (editedTask.projectSkillName || '') : '',
         isActive: editedTask.isActive !== undefined ? editedTask.isActive : true,
         recurrencePattern: editedTask.recurrencePattern || null,
-        targetDate: editedTask.targetDate || null
+        targetDate: editedTask.targetDate || null,
+        scheduledStartDate: editedTask.targetDate || null,
       };
 
       await onSave(taskToSave);
@@ -258,10 +281,10 @@ export default function EditScheduledTaskModal({
             <input
               type="date"
               id="targetDate"
-              value={editedTask.targetDate ? new Date(editedTask.targetDate).toISOString().split('T')[0] : ''}
+              value={formatDateForInput(editedTask.targetDate)}
               onChange={(e) => setEditedTask(prev => ({ 
                 ...prev, 
-                targetDate: e.target.value ? new Date(e.target.value).toISOString() : null 
+                targetDate: e.target.value || null 
               }))}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />

@@ -33,6 +33,9 @@ export const translations = {
     noUsersAssigned: 'No users assigned',
     filterByUser: 'Filter by user', allUsers: 'All Users', allDepartments: 'All Departments',
     assignedTo: 'Assigned To', assignedBy: 'Assigned By',
+    addObservers: 'Add Observers',
+    observers: 'Observers',
+    observer: 'Observer',
     markPending: 'Mark as Pending', markOngoing: 'Mark as Ongoing', filterByMonth: 'Filter by Month',
     loading: 'Loading...',
     searchUsers: 'Search users',
@@ -267,16 +270,6 @@ export const translations = {
     marketFeature4: 'Special deals and limited-time offers',
     marketCallToAction: 'Keep earning points by completing tasks to be ready when the market launches!',
     marketStayTuned: 'Stay tuned for updates!',
-    // Attendance translations
-    attendance: 'Attendance',
-    attendanceComingSoon: 'Attendance Coming Soon!',
-    attendanceDescription: 'We\'re working on an advanced attendance tracking system that will help you manage your work hours, track attendance, and view detailed reports.',
-    attendanceFeatures: 'What to Expect',
-    attendanceFeature1: 'Check-in and check-out',
-    attendanceFeature2: 'View attendance history and reports',
-    attendanceFeature3: 'Automatic overtime and break calculations',
-    attendanceCallToAction: 'Stay tuned for updates on this exciting new feature!',
-    attendanceStayTuned: 'Coming soon to Karya!',
     // Delete task translations
     deleteTask: 'Delete Task',
     deleteTaskConfirmation: 'Are you sure you want to delete this task?',
@@ -287,6 +280,19 @@ export const translations = {
     deleteReasonHelp: 'This reason will be added to the task notes and logged for audit purposes.',
     deleteTaskError: 'Failed to delete task. Please try again.',
     deleting: 'Deleting...',
+    bulkDeleteTasks: 'Bulk Delete Tasks',
+    bulkDeleteConfirmation: (count) => `Are you sure you want to delete ${count} selected tasks?`,
+    bulkDeleteTaskNote: 'These tasks will be marked as deleted and hidden from users, but will remain visible to administrators. The same reason will be added to all selected tasks.',
+    selectTasksToDelete: 'Select tasks',
+    tasksSelected: 'task(s) selected',
+    selectableVisibleTasks: 'selectable visible task(s)',
+    clearVisibleSelection: 'Clear visible',
+    selectAllVisible: 'Select all visible',
+    deleteSelectedTasks: 'Delete selected tasks',
+    selectTask: 'Select task',
+    taskCannotBeBulkDeleted: 'This task cannot be bulk deleted',
+    untitledTask: 'Untitled task',
+    more: 'more',
   },
   hi: {
     welcome: 'कार्य में आपका स्वागत है',
@@ -320,6 +326,9 @@ export const translations = {
     noUsersAssigned: 'कोई उपयोगकर्ता सौंपा नहीं',
     filterByUser: 'उपयोगकर्ता द्वारा फ़िल्टर करें', allUsers: 'सभी उपयोगकर्ता', allDepartments: 'सभी विभाग',
     assignedTo: 'को सौंपा', assignedBy: 'द्वारा सौंपा गया',
+    addObservers: 'पर्यवेक्षक जोड़ें',
+    observers: 'पर्यवेक्षक',
+    observer: 'पर्यवेक्षक',
     markPending: 'लंबित चिह्नित करें', markOngoing: 'जारी चिह्नित करें', filterByMonth: 'माह के अनुसार फ़िल्टर करें',
     loading: 'लोड हो रहा है...',
     searchUsers: 'उपयोगकर्ता खोजें',
@@ -538,16 +547,6 @@ export const translations = {
     marketFeature4: 'विशेष डील और सीमित समय के ऑफर',
     marketCallToAction: 'बाजार लॉन्च होने के लिए तैयार होने के लिए कार्य पूरा करके अंक कमाते रहें!',
     marketStayTuned: 'अपडेट के लिए बने रहें!',
-    // Attendance translations
-    attendance: 'उपस्थिति',
-    attendanceComingSoon: 'उपस्थिति जल्द आ रही है!',
-    attendanceDescription: 'हम एक उन्नत उपस्थिति ट्रैकिंग सिस्टम पर काम कर रहे हैं जो आपको अपने काम के घंटे प्रबंधित करने, उपस्थिति ट्रैक करने और विस्तृत रिपोर्ट देखने में मदद करेगा।',
-    attendanceFeatures: 'क्या उम्मीद करें',
-    attendanceFeature1: 'चेक-इन और चेक-आउट',
-    attendanceFeature2: 'उपस्थिति इतिहास और रिपोर्ट देखें',
-    attendanceFeature3: 'स्वचालित ओवरटाइम और ब्रेक गणना',
-    attendanceCallToAction: 'इस रोमांचक नई सुविधा के अपडेट के लिए बने रहें!',
-    attendanceStayTuned: 'कार्य में जल्द आ रहा है!',
     // Delete task translations
     deleteTask: 'कार्य हटाएं',
     deleteTaskConfirmation: 'क्या आप वाकई इस कार्य को हटाना चाहते हैं?',
@@ -558,6 +557,19 @@ export const translations = {
     deleteReasonHelp: 'यह कारण कार्य नोट्स में जोड़ा जाएगा और ऑडिट उद्देश्यों के लिए लॉग किया जाएगा।',
     deleteTaskError: 'कार्य हटाने में विफल। कृपया पुनः प्रयास करें।',
     deleting: 'हटा रहे हैं...',
+    bulkDeleteTasks: 'एक साथ कार्य हटाएँ',
+    bulkDeleteConfirmation: (count) => `क्या आप वाकई ${count} चयनित कार्य हटाना चाहते हैं?`,
+    bulkDeleteTaskNote: 'ये कार्य हटाए गए के रूप में चिह्नित किए जाएंगे और उपयोगकर्ताओं से छिपा दिए जाएंगे, लेकिन प्रशासकों को दिखाई देंगे। एक ही कारण सभी चयनित कार्यों में जोड़ा जाएगा।',
+    selectTasksToDelete: 'कार्य चुनें',
+    tasksSelected: 'कार्य चयनित',
+    selectableVisibleTasks: 'चयन योग्य दिखने वाले कार्य',
+    clearVisibleSelection: 'दिखाई चयन हटाएँ',
+    selectAllVisible: 'सभी दिखाई चुनें',
+    deleteSelectedTasks: 'चयनित कार्य हटाएँ',
+    selectTask: 'कार्य चुनें',
+    taskCannotBeBulkDeleted: 'यह कार्य सामूहिक रूप से हटाया नहीं जा सकता',
+    untitledTask: 'बिना शीर्षक का कार्य',
+    more: 'और',
   },
 };
 
@@ -565,8 +577,14 @@ export function useI18n() {
   const [language, setLangState] = useState(() => localStorage.getItem('kartavya_language') || 'en');
 
   const t = useMemo(() => (key, ...args) => {
-    const translation = translations[language]?.[key] || translations.en[key];
-    return typeof translation === 'function' ? translation(...args) : translation;
+    const translation = translations[language]?.[key] ?? translations.en[key];
+    if (typeof translation === 'function') {
+      return translation(...args);
+    }
+    if (translation !== undefined) {
+      return translation;
+    }
+    return typeof args[0] === 'string' ? args[0] : key;
   }, [language]);
 
   const setLanguage = useCallback((lang) => {

@@ -6,7 +6,7 @@
  */
 
 import { db } from '../../firebase';
-import { doc, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, getDoc, runTransaction } from 'firebase/firestore';
 import { cleanFirestoreData } from './firestoreHelpers';
 
 /**
@@ -15,6 +15,33 @@ import { cleanFirestoreData } from './firestoreHelpers';
 export const POINTS_CONFIG = {
   EXPIRATION_DAYS: 90, // Points expire after 90 days by default
   MIN_REDEMPTION_POINTS: 100, // Minimum points required for redemption
+};
+
+const buildInitialPointsHistory = (userData = {}) => {
+  const existingPointsHistory = userData?.pointsHistory || {};
+  if (Object.keys(existingPointsHistory).length > 0) {
+    return { ...existingPointsHistory };
+  }
+
+  const fallbackPoints = Math.floor(userData?.totalTCS || userData?.weeklyTCS || 0);
+  if (fallbackPoints <= 0) {
+    return {};
+  }
+
+  const todayKey = formatDateKey(new Date());
+  if (!todayKey) {
+    return {};
+  }
+
+  return {
+    [todayKey]: {
+      points: fallbackPoints,
+      addedAt: serverTimestamp(),
+      expirationDays: POINTS_CONFIG.EXPIRATION_DAYS,
+      isUsable: true,
+      source: 'legacy_tcs_migration',
+    },
+  };
 };
 
 /**
@@ -186,7 +213,8 @@ function parseDateKey(dateKey) {
     return null;
   }
 
-  const parts = dateKey.split('-').map((segment) => Number.parseInt(segment, 10));
+  const normalizedKey = dateKey.slice(0, 10);
+  const parts = normalizedKey.split('-').map((segment) => Number.parseInt(segment, 10));
   if (parts.length !== 3 || parts.some(Number.isNaN)) {
     return null;
   }
@@ -240,8 +268,8 @@ export async function addPoints(userId, points, expirationDays = null) {
       throw new Error('Unable to generate date key');
     }
 
-    // Get existing points history
-    const pointsHistory = userData.pointsHistory || {};
+    // Seed legacy users from their stored TCS before first write.
+    const pointsHistory = buildInitialPointsHistory(userData);
     
     // Add new points entry
     const newEntry = {
@@ -309,7 +337,10 @@ export async function redeemPoints(userId, pointsToRedeem) {
     }
 
     const userData = userDoc.data();
-    const usablePoints = userData.usablePoints || 0;
+    const fallbackUsablePoints = calculateUsablePoints(userData);
+    const usablePoints = typeof userData.usablePoints === 'number'
+      ? Math.max(userData.usablePoints, fallbackUsablePoints)
+      : fallbackUsablePoints;
 
     // Check if user has enough points
     if (usablePoints < pointsToRedeem) {
@@ -321,7 +352,7 @@ export async function redeemPoints(userId, pointsToRedeem) {
     }
 
     // Get points history and deduct points
-    const pointsHistory = { ...(userData.pointsHistory || {}) };
+    const pointsHistory = buildInitialPointsHistory(userData);
     
     // Deduct points from oldest non-expired entries first
     let remainingToRedeem = pointsToRedeem;
@@ -528,6 +559,126 @@ export async function resetPointsExpirationDate(userId) {
 
   } catch (error) {
     console.error('Error resetting points expiration:', error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Admin function: Manually adjust user points (add or subtract)
+ * 
+ * @param {string} userId - User ID
+ * @param {number} pointsAdjustment - Points to add (positive) or subtract (negative)
+ * @param {string} reason - Reason for adjustment
+ * @param {string} adminId - Admin user ID making the adjustment
+ * @returns {Promise<Object>} Result
+ */
+export async function adjustUserPoints(userId, pointsAdjustment, reason, adminId) {
+  try {
+    if (!userId || typeof pointsAdjustment !== 'number' || pointsAdjustment === 0) {
+      throw new Error('Invalid parameters');
+    }
+
+    const result = await runTransaction(db, async (tx) => {
+      const userRef = doc(db, 'users', userId);
+      const userDoc = await tx.get(userRef);
+      
+      if (!userDoc.exists()) {
+        throw new Error('User not found');
+      }
+
+      const userData = userDoc.data();
+      const todayKey = formatDateKey(new Date());
+      
+      if (!todayKey) {
+        throw new Error('Unable to generate date key');
+      }
+
+      const pointsHistory = buildInitialPointsHistory(userData);
+      const adjustmentKey = `${todayKey}-adj-${Date.now()}`;
+      
+      if (pointsAdjustment > 0) {
+        pointsHistory[adjustmentKey] = {
+          points: pointsAdjustment,
+          addedAt: serverTimestamp(),
+          expirationDays: POINTS_CONFIG.EXPIRATION_DAYS,
+          isUsable: true,
+          adjustmentReason: reason || 'Admin adjustment',
+          adjustedBy: adminId,
+          adjustmentType: 'addition',
+        };
+      } else {
+        let remainingToDeduct = Math.abs(pointsAdjustment);
+        const sortedEntries = Object.entries(pointsHistory).sort((a, b) => {
+          const dateA = parseDateKey(a[0]);
+          const dateB = parseDateKey(b[0]);
+          return (dateA?.getTime() || 0) - (dateB?.getTime() || 0);
+        });
+        const now = new Date();
+
+        for (const [dateKey, entry] of sortedEntries) {
+          if (remainingToDeduct <= 0) break;
+          if (!entry || entry.points <= 0 || entry.isUsable === false) continue;
+          const pointsDate = parseDateKey(dateKey);
+          if (!pointsDate) continue;
+          const expirationDate = new Date(pointsDate);
+          expirationDate.setDate(expirationDate.getDate() + (entry.expirationDays || POINTS_CONFIG.EXPIRATION_DAYS));
+          if (now > expirationDate) {
+            entry.isUsable = false;
+            continue;
+          }
+          const pointsToDeduct = Math.min(remainingToDeduct, entry.points);
+          entry.points -= pointsToDeduct;
+          remainingToDeduct -= pointsToDeduct;
+          if (entry.points <= 0) {
+            entry.isUsable = false;
+          }
+        }
+
+        pointsHistory[adjustmentKey] = {
+          points: 0,
+          addedAt: serverTimestamp(),
+          expirationDays: POINTS_CONFIG.EXPIRATION_DAYS,
+          isUsable: false,
+          adjustmentReason: reason || 'Admin adjustment',
+          adjustedBy: adminId,
+          adjustmentType: 'subtraction',
+          amountDeducted: Math.abs(pointsAdjustment),
+        };
+
+        if (remainingToDeduct > 0) {
+          throw new Error(`Not enough points to deduct. Could only deduct ${Math.abs(pointsAdjustment) - remainingToDeduct} points.`);
+        }
+      }
+
+      const updatedUsablePoints = calculateUsablePoints({ ...userData, pointsHistory });
+      const updatedTotalPoints = calculateTotalPoints({ ...userData, pointsHistory });
+
+      tx.update(userRef, cleanFirestoreData({
+        pointsHistory,
+        usablePoints: updatedUsablePoints,
+        totalPoints: updatedTotalPoints,
+        lastPointsAdjustment: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }));
+
+      return {
+        newUsablePoints: updatedUsablePoints,
+        newTotalPoints: updatedTotalPoints,
+      };
+    });
+
+    return {
+      success: true,
+      newUsablePoints: result.newUsablePoints,
+      newTotalPoints: result.newTotalPoints,
+      adjustment: pointsAdjustment,
+    };
+
+  } catch (error) {
+    console.error('Error adjusting user points:', error);
     return {
       success: false,
       error: error.message,
